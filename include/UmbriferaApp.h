@@ -7,6 +7,8 @@
 #include <mutex>
 #include <libraw/libraw.h>
 
+#include "FileNavigator.h"
+
 #include <Metal/Metal.h>
 #include <QuartzCore/QuartzCore.h>
 #include <simd/simd.h>
@@ -36,6 +38,7 @@ public:
     void Shutdown();
     
     void OpenExportDialog(const std::string& format);
+    void LoadRawImage(const std::string& path);
 
 public:
     bool m_ResetLayoutRequested = false; // Public so menu handler can access it
@@ -50,7 +53,7 @@ private:
     void ProcessImage();
     
     void UpdateUniforms();
-    void LoadRawImage(const std::string& path);
+    // void LoadRawImage(const std::string& path); // Moved to public
     void SaveImage(const std::string& filename, const std::string& format);
     void SaveImageAsync(const std::string& filename, const std::string& format);
     void SetupLayout();
@@ -66,6 +69,9 @@ private:
     float m_ClearColor[4] = {0.45f, 0.55f, 0.60f, 1.00f};
     
     Uniforms m_Uniforms;
+    
+    // Components
+    std::unique_ptr<FileNavigator> m_FileNavigator;
     
     // View State
     float m_ViewZoom = 1.0f;

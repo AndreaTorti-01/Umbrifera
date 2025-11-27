@@ -97,6 +97,7 @@ add_executable(Umbrifera
     src/UmbriferaApp_UI.mm
     src/UmbriferaApp_Image.mm
     src/UmbriferaApp_Render_Metal.mm
+    src/FileNavigator.mm
 )
 
 target_include_directories(Umbrifera PUBLIC include)

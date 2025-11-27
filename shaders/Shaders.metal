@@ -133,23 +133,27 @@ fragment float4 fragment_main(VertexOut in [[stage_in]],
 }
 
 // Compute Shader: Histogram
-// Calculates the brightness distribution of the image.
+// Calculates the luminance distribution of the image.
 kernel void histogram_main(texture2d<float, access::read> inputTexture [[texture(0)]],
-                         device atomic_uint* histogram [[buffer(0)]],
+                         device atomic_uint* histogramBuffer [[buffer(0)]],
                          uint2 gid [[thread_position_in_grid]]) {
-    // Check bounds
-    if (gid.x >= inputTexture.get_width() || gid.y >= inputTexture.get_height()) return;
     
+    // Check bounds
+    if (gid.x >= inputTexture.get_width() || gid.y >= inputTexture.get_height()) {
+        return;
+    }
+    
+    // Read pixel
     float4 color = inputTexture.read(gid);
     
-    // Calculate Luminance (perceived brightness)
-    // Rec. 709 coefficients
-    float lum = 0.2126 * color.r + 0.7152 * color.g + 0.0722 * color.b;
+    // Calculate Luminance (Perceptual Weighting: 30% R, 59% G, 11% B)
+    // Input color is already sRGB (from fragment shader), so this luma is perceptual.
+    float luma = dot(color.rgb, float3(0.30, 0.59, 0.11));
     
-    // Map 0.0-1.0 to 0-255 bin index
-    uint bin = uint(lum * 255.0);
-    if (bin > 255) bin = 255;
+    // Calculate bin index (0-255)
+    // Linear X-axis mapping dark -> light
+    uint bin = uint(saturate(luma) * 255.0);
     
-    // Atomically increment the counter for this brightness bin
-    atomic_fetch_add_explicit(&histogram[bin], 1, memory_order_relaxed);
+    // Atomic increment
+    atomic_fetch_add_explicit(&histogramBuffer[bin], 1, memory_order_relaxed);
 }

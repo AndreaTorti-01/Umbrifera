@@ -37,8 +37,43 @@ bool SliderWithReset(const char* label, float* v, float v_min, float v_max, floa
 }
 
 void UmbriferaApp::RenderUI() {
+    // Loading Modal (Blocks interaction)
+    if (m_IsLoading) {
+        if (!ImGui::IsPopupOpen("Loading...")) {
+            ImGui::OpenPopup("Loading...");
+        }
+    }
+    
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("Loading...", NULL, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoTitleBar)) {
+        ImGui::Text("Loading Image...");
+        
+        // Simple Spinner Animation
+        float time = (float)ImGui::GetTime();
+        float angle = time * 6.0f;
+        float radius = 20.0f;
+        ImVec2 center = ImGui::GetCursorScreenPos();
+        center.x += 100.0f; // Center in 200px window
+        center.y += 30.0f;
+        
+        ImGui::GetWindowDrawList()->PathClear();
+        int num_segments = 30;
+        for (int i = 0; i < num_segments; i++) {
+            float a = angle + ((float)i / (float)num_segments) * 2.0f * 3.14159f;
+            ImGui::GetWindowDrawList()->PathLineTo(ImVec2(center.x + cosf(a) * radius, center.y + sinf(a) * radius));
+        }
+        ImGui::GetWindowDrawList()->PathStroke(ImGui::GetColorU32(ImGuiCol_Text), 0, 3.0f);
+        
+        ImGui::Dummy(ImVec2(200, 60)); // Space for spinner
+        
+        if (!m_IsLoading) {
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
     // Export Options Modal
-    if (m_ShowExportOptions) {
+    if (m_ShowExportOptions && m_ProcessedTexture) { // Only allow if image loaded
         std::string title = m_ExportFormat == "jpg" ? "JPG Export" : (m_ExportFormat == "png" ? "PNG Export" : "TIFF Export");
         ImGui::OpenPopup(title.c_str());
         ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
@@ -326,7 +361,8 @@ void UmbriferaApp::RenderUI() {
 
     // Create a DockSpace that covers the whole application window.
     // This allows us to drag and drop windows inside the app.
-    ImGuiID dockspace_id = ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport());
+    // ImGuiDockNodeFlags_NoWindowMenuButton: Removes the small triangle button on the tab bar
+    ImGuiID dockspace_id = ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport(), ImGuiDockNodeFlags_NoWindowMenuButton);
 
     // Handle reset layout request
     if (m_ResetLayoutRequested) {
@@ -335,39 +371,44 @@ void UmbriferaApp::RenderUI() {
         
         ImGui::DockBuilderSetNodeSize(dockspace_id, ImGui::GetMainViewport()->Size);
         
+        ImGuiID dock_id_left = ImGui::DockBuilderSplitNode(dockspace_id, ImGuiDir_Left, 0.20f, nullptr, &dockspace_id);
         ImGuiID dock_id_right = ImGui::DockBuilderSplitNode(dockspace_id, ImGuiDir_Right, 0.20f, nullptr, &dockspace_id);
         
+        ImGui::DockBuilderDockWindow("Navigator", dock_id_left);
         ImGui::DockBuilderDockWindow("Image Viewer", dockspace_id);
         ImGui::DockBuilderDockWindow("Develop", dock_id_right);
         
         ImGui::DockBuilderFinish(dockspace_id);
         m_ResetLayoutRequested = false;
     }
+    
+    // Draw File Navigator
+    if (m_FileNavigator) {
+        m_FileNavigator->Render([this](std::string path) {
+            LoadRawImage(path);
+        });
+    }
 
     // --- Center Window: Image Viewer ---
     // This is where we display the photo.
     ImGui::Begin("Image Viewer");
     
-    // Top Margin
-    ImGui::Dummy(ImVec2(0.0f, 10.0f));
-
     if (m_ProcessedTexture) {
         // Margins
-        float margin = 10.0f;
-        
-        // Reserve space for buttons at bottom
-        // Taller row: FrameHeight + Padding (e.g., 20 + 20 = 40px)
+        // Calculate bottom margin based on button bar height
         float buttonBarHeight = ImGui::GetFrameHeight() + 20.0f;
+        float margin = 10.0f; // Small uniform margin
         
         ImVec2 windowSize = ImGui::GetContentRegionAvail();
         
-        // Canvas Size: Window - Margins - ButtonBar
-        // We subtract 2*margin from width (Left/Right)
-        // We subtract margin from height (Bottom margin before buttons)
-        ImVec2 availSize = ImVec2(windowSize.x - 2.0f * margin, windowSize.y - buttonBarHeight - margin);
+        // Canvas Size: Window - Margins
+        // Width: Window - Left Margin - Right Margin
+        // Height: Window - Top Margin - Bottom Margin - ButtonBarHeight
+        ImVec2 availSize = ImVec2(windowSize.x - 2.0f * margin, windowSize.y - 2.0f * margin - buttonBarHeight);
         
-        // Apply Left Margin
+        // Apply Left and Top Margin
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + margin);
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + margin);
         
         ImVec2 cursorScreenPos = ImGui::GetCursorScreenPos();
         
@@ -447,7 +488,8 @@ void UmbriferaApp::RenderUI() {
         ImVec2 winPos = ImGui::GetWindowPos();
         ImVec2 winSize = ImGui::GetWindowSize();
         
-        float btnRowY = cursorScreenPos.y + availSize.y + margin;
+        // Position button bar at the very bottom of the window area
+        float btnRowY = winPos.y + winSize.y - buttonBarHeight;
         ImVec2 btnRowMin = ImVec2(winPos.x, btnRowY);
         ImVec2 btnRowMax = ImVec2(winPos.x + winSize.x, btnRowY + buttonBarHeight);
         
@@ -475,32 +517,39 @@ void UmbriferaApp::RenderUI() {
         }
         
     } else {
-        // Show loading spinner or progress bar if no image
-        if (m_IsLoading) {
-            // Center the progress bar
-            float windowWidth = ImGui::GetWindowWidth();
-            float windowHeight = ImGui::GetWindowHeight();
-            float barWidth = 300.0f;
-            float barHeight = 30.0f;
-            
-            ImGui::SetCursorPos(ImVec2((windowWidth - barWidth) * 0.5f, (windowHeight - barHeight) * 0.5f));
-            
-            // Animated Progress Bar (Indeterminate)
-            float time = (float)ImGui::GetTime();
-            float fraction = fmodf(time * 0.5f, 1.0f); // 0.0 to 1.0 loop
-            
-            ImGui::BeginGroup();
-            ImGui::Text("Loading Image...");
-            ImGui::ProgressBar(fraction, ImVec2(barWidth, 0));
-            ImGui::EndGroup();
-        } else {
-            ImGui::Text("No image loaded.");
-        }
+        // Tutorial Text when no image is loaded
+        ImVec2 windowSize = ImGui::GetContentRegionAvail();
+        ImVec2 center = ImGui::GetCursorScreenPos();
+        center.x += windowSize.x * 0.5f;
+        center.y += windowSize.y * 0.5f;
+        
+        const char* text1 = "Welcome to Umbrifera";
+        const char* text2 = "Use the File Navigator on the left to open a RAW image.";
+        const char* text3 = "Right-click a folder to set it as the root directory.";
+        const char* text4 = "Use the top menu to Export your work.";
+        const char* text5 = "Click on any slider label to reset its value.";
+        
+        auto RenderCenteredText = [&](const char* text, float yOffset) {
+            ImVec2 textSize = ImGui::CalcTextSize(text);
+            ImGui::SetCursorScreenPos(ImVec2(center.x - textSize.x * 0.5f, center.y + yOffset));
+            ImGui::Text("%s", text);
+        };
+        
+        RenderCenteredText(text1, -60);
+        RenderCenteredText(text2, -20);
+        RenderCenteredText(text3, 0);
+        RenderCenteredText(text4, 20);
+        RenderCenteredText(text5, 40);
     }
     ImGui::End();
     
     // --- Right Window: Develop ---
     ImGui::Begin("Develop");
+    
+    // Disable controls if no image
+    if (!m_ProcessedTexture) {
+        ImGui::BeginDisabled();
+    }
     
     // Top Margin
     ImGui::Dummy(ImVec2(0.0f, 10.0f));
@@ -560,9 +609,40 @@ void UmbriferaApp::RenderUI() {
         // Normalize
         for (float& v : smoothedHist) v /= maxVal;
         
-        // Plot
-        // We use 1.1f as max scale to leave a little headroom, but clipped values (at 0 or 255) might exceed 1.0
-        ImGui::PlotHistogram("##histogram", smoothedHist.data(), (int)smoothedHist.size(), 0, NULL, 0.0f, 1.1f, ImVec2(ImGui::GetContentRegionAvail().x, 80));
+        // Plot (Custom Solid Rendering)
+        ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
+        ImVec2 canvas_size = ImVec2(ImGui::GetContentRegionAvail().x, 80);
+        
+        ImDrawList* draw_list = ImGui::GetWindowDrawList();
+        
+        // Background
+        draw_list->AddRectFilled(canvas_pos, ImVec2(canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y), ImGui::GetColorU32(ImGuiCol_FrameBg));
+        
+        // Draw Filled Curve
+        if (smoothedHist.size() > 1) {
+            std::vector<ImVec2> points;
+            points.reserve(smoothedHist.size() + 2);
+            
+            // Start point (bottom left)
+            points.push_back(ImVec2(canvas_pos.x, canvas_pos.y + canvas_size.y));
+            
+            for (int i = 0; i < smoothedHist.size(); ++i) {
+                float x = canvas_pos.x + (float)i / (float)(smoothedHist.size() - 1) * canvas_size.x;
+                float y = canvas_pos.y + canvas_size.y - smoothedHist[i] * canvas_size.y;
+                
+                // Clamp to top of canvas to prevent drawing outside
+                if (y < canvas_pos.y) y = canvas_pos.y;
+                
+                points.push_back(ImVec2(x, y));
+            }
+            
+            // End point (bottom right)
+            points.push_back(ImVec2(canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y));
+            
+            draw_list->AddConvexPolyFilled(points.data(), (int)points.size(), ImGui::GetColorU32(ImGuiCol_PlotHistogram));
+        }
+        
+        ImGui::Dummy(canvas_size);
     }
     
     ImGui::Dummy(ImVec2(0.0f, 10.0f));
@@ -603,6 +683,10 @@ void UmbriferaApp::RenderUI() {
     
     // Bottom Margin
     ImGui::Dummy(ImVec2(0.0f, 10.0f));
+
+    if (!m_ProcessedTexture) {
+        ImGui::EndDisabled();
+    }
 
     ImGui::End();
 }

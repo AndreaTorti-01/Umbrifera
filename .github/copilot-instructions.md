@@ -36,3 +36,10 @@ Umbrifera is a high-performance Raw Image Processor built with C++20, Metal (mac
 - **ImGui:** Fetched via CMake. Used with Docking and Viewports enabled.
 - **LibRaw:** Fetched via CMake. Handles raw file parsing.
 - **GLFW:** Window management (fetched via CMake).
+
+## Development Process
+- **Incremental Development:** Build one small piece at a time and verify it works before moving to the next.
+- **Continuous Testing:** Keep running tests (or manual verification) frequently to catch issues early.
+
+## Task Tracking
+- **Tasks File:** Maintain a `tasks.md` file in the root directory to track progress, planned features, and known bugs. Update this file as you complete tasks or identify new ones. This replaces the use of temporary notebooks for task tracking.

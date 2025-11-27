@@ -26,6 +26,8 @@ UmbriferaApp::UmbriferaApp() {
     m_Uniforms.saturation = 1.0f;
     m_Uniforms.base_exposure = 0.0f;
     m_Uniforms.tonemap_mode = 1; // Default to ACES
+    
+    m_FileNavigator = std::make_unique<FileNavigator>();
 }
 
 UmbriferaApp::~UmbriferaApp() {
@@ -38,8 +40,10 @@ bool UmbriferaApp::Init() {
         return false;
 
     InitWindow();
-    InitGraphics();
+    InitGraphics(); // Sets up m_Device
     InitImGui();
+    
+    m_FileNavigator->Init(m_Device);
 
     return true;
 }
@@ -82,9 +86,6 @@ void UmbriferaApp::InitImGui() {
         // Default
         io.Fonts->AddFontDefault(&fontConfig);
     }
-    
-    // Build font atlas with proper Retina texture
-    io.Fonts->Build();
     
     // Setup Material-like Style
     ImGuiStyle& style = ImGui::GetStyle();
@@ -138,14 +139,21 @@ void UmbriferaApp::InitImGui() {
     colors[ImGuiCol_ResizeGrip]             = ImVec4(0.26f, 0.59f, 0.98f, 0.25f);
     colors[ImGuiCol_ResizeGripHovered]      = ImVec4(0.26f, 0.59f, 0.98f, 0.67f);
     colors[ImGuiCol_ResizeGripActive]       = ImVec4(0.26f, 0.59f, 0.98f, 0.95f);
-    colors[ImGuiCol_Tab]                    = ImVec4(0.18f, 0.18f, 0.18f, 0.86f);
-    colors[ImGuiCol_TabHovered]             = ImVec4(0.26f, 0.59f, 0.98f, 0.80f);
-    colors[ImGuiCol_TabActive]              = ImVec4(0.20f, 0.20f, 0.20f, 1.00f);
-    colors[ImGuiCol_TabUnfocused]           = ImVec4(0.07f, 0.10f, 0.15f, 0.97f);
-    colors[ImGuiCol_TabUnfocusedActive]     = ImVec4(0.14f, 0.14f, 0.14f, 1.00f);
+    
+    // Tab Styling (Neutral Greys, No Blue Highlight)
+    colors[ImGuiCol_Tab]                    = ImVec4(0.18f, 0.18f, 0.18f, 1.00f);
+    colors[ImGuiCol_TabHovered]             = ImVec4(0.28f, 0.28f, 0.28f, 1.00f); // Lighter grey on hover
+    colors[ImGuiCol_TabActive]              = ImVec4(0.20f, 0.20f, 0.20f, 1.00f); // Subtle difference for active
+    colors[ImGuiCol_TabUnfocused]           = ImVec4(0.18f, 0.18f, 0.18f, 1.00f); // Same as normal tab
+    colors[ImGuiCol_TabUnfocusedActive]     = ImVec4(0.20f, 0.20f, 0.20f, 1.00f); // Same as active tab
+    
     colors[ImGuiCol_DockingPreview]         = ImVec4(0.26f, 0.59f, 0.98f, 0.70f);
     colors[ImGuiCol_DockingEmptyBg]         = ImVec4(0.20f, 0.20f, 0.20f, 1.00f);
     colors[ImGuiCol_PlotLines]              = ImVec4(0.61f, 0.61f, 0.61f, 1.00f);
+    
+    // Ensure text is left-aligned
+    style.WindowTitleAlign = ImVec2(0.0f, 0.5f);
+
     colors[ImGuiCol_PlotLinesHovered]       = ImVec4(1.00f, 0.43f, 0.35f, 1.00f);
     colors[ImGuiCol_PlotHistogram]          = ImVec4(0.90f, 0.70f, 0.00f, 1.00f);
     colors[ImGuiCol_PlotHistogramHovered]   = ImVec4(1.00f, 0.60f, 0.00f, 1.00f);
@@ -169,7 +177,7 @@ void UmbriferaApp::InitImGui() {
 void UmbriferaApp::InitGraphics() {
     InitMetal();
     // Start loading the default image
-    LoadRawImage("image.NEF");
+    // LoadRawImage("image.NEF"); // Removed as per request
 }
 
 void UmbriferaApp::Run() {
@@ -210,6 +218,11 @@ void UmbriferaApp::UpdateUniforms() {
 @end
 
 void UmbriferaApp::OpenExportDialog(const std::string& format) {
+    // Prevent opening export dialog if no image is loaded
+    if (!m_ProcessedTexture) {
+        return;
+    }
+
     m_ExportFormat = format;
     m_ShowExportOptions = true;
 }
