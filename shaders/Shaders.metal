@@ -45,7 +45,12 @@ struct Uniforms {
     float grain_amount;
     float grain_size;
     float base_exposure;
-    int tonemap_mode;
+    // Removed tonemap_mode
+    
+    // Constants
+    float contrast_pivot;
+    float blacks_scale;
+    float whites_scale;
     
     // HSL Adjustments
     int hsl_enabled;
@@ -74,20 +79,7 @@ float3 linear_to_srgb(float3 c) {
     return pow(c, 1.0/2.2);
 }
 
-// Helper: ACES Tone Mapping (Narkowicz 2015)
-float3 ACESFilm(float3 x) {
-    float a = 2.51f;
-    float b = 0.03f;
-    float c = 2.43f;
-    float d = 0.59f;
-    float e = 0.14f;
-    return saturate((x*(a*x+b))/(x*(c*x+d)+e));
-}
-
-// Helper: Reinhard Tone Mapping
-float3 Reinhard(float3 x) {
-    return x / (x + 1.0);
-}
+// Tone Mapping Functions Removed
 
 // Helper: RGB to HSV
 float3 rgb2hsv(float3 c) {
@@ -248,34 +240,47 @@ fragment float4 fragment_main(VertexOut in [[stage_in]],
     if (uniforms.hsl_enabled != 0) {
         float3 hsv = rgb2hsv(color.rgb);
         float hue = hsv.x; // 0.0 to 1.0
+        float sat = hsv.y;
+        float val = hsv.z;
         
         float4 total_adj = float4(0.0);
         float total_weight = 0.0;
         
         // Iterate over all 15 slices
-        // This gives a high quality Gaussian influence
         for (int i = 0; i < 15; i++) {
             float slice_hue = float(i) / 15.0;
             
-            // Calculate distance in hue space (circular)
-            float dist = abs(hue - slice_hue);
-            if (dist > 0.5) dist = 1.0 - dist;
+            // 1. Hue Distance (Circular)
+            float distH = abs(hue - slice_hue);
+            if (distH > 0.5) distH = 1.0 - distH;
             
-            // Gaussian Weight
-            // Sigma controls the width.
-            // 15 slices = 1/15 spacing = 0.066
-            // Sigma should be around that to have smooth overlap.
-            // User requested <1% effect on neighbors.
-            // Neighbor dist = 1/15 = 0.066.
-            // exp(-(0.066^2)/(2*sigma^2)) < 0.01 => sigma < 0.022.
-            float sigma = 0.02;
-            float w = gaussian_weight(dist, sigma);
+            // 2. Saturation Distance (Target: 1.0)
+            // Falloff as saturation decreases
+            float distS = 1.0 - sat;
             
-            // Optimization: Skip if weight is negligible
-            if (w > 0.01) {
-                total_adj += uniforms.hsl_adjustments[i] * w;
-                total_weight += w;
-            }
+            // 3. Value/Luminance Distance (Target: 1.0)
+            // Falloff as value decreases (darker pixels)
+            float distV = 1.0 - val;
+            
+            // Combined Gaussian Weight
+            // Sigma H: Controls hue width (overlap)
+            // Sigma S: Controls saturation falloff (how much it affects low sat)
+            // Sigma V: Controls luminance falloff (how much it affects darks)
+            
+            float sigmaH = 0.028;
+            float saturation_threshold = 0.2;
+            float saturation_min = 0.0;
+            
+            float wH = gaussian_weight(distH, sigmaH);
+            float wS = smoothstep(saturation_min, saturation_threshold, sat);
+            float wV = 1.0;
+            
+            // Combined weight
+            float w = wH * wS * wV;
+            
+            total_adj += uniforms.hsl_adjustments[i] * w;
+            total_weight += w;
+            
         }
         
         if (total_weight > 0.001) {
@@ -289,8 +294,6 @@ fragment float4 fragment_main(VertexOut in [[stage_in]],
             hsv.y = saturate(hsv.y + adj.y);
             
             // Apply Luminance Shift
-            // Do NOT saturate Z (Value) to allow HDR values > 1.0
-            // Just ensure it doesn't go negative.
             hsv.z = max(0.0, hsv.z + adj.z);
             
             color.rgb = hsv2rgb(hsv);
@@ -305,8 +308,9 @@ fragment float4 fragment_main(VertexOut in [[stage_in]],
         color.rgb = hsv2rgb(hsv);
     }
     
-    // Contrast (Pivot around mid-grey 0.18 in linear)
-    color.rgb = (color.rgb - 0.18) * uniforms.contrast + 0.18;
+    // Contrast
+    // Pivot around mid-grey (0.18)
+    color.rgb = (color.rgb - uniforms.contrast_pivot) * uniforms.contrast + uniforms.contrast_pivot;
     
     // Highlights / Shadows (Simple Luma-based masking)
     luma = dot(color.rgb, float3(0.2126, 0.7152, 0.0722));
@@ -319,9 +323,10 @@ fragment float4 fragment_main(VertexOut in [[stage_in]],
     float highlight_mask = smoothstep(0.18, 1.0, luma);
     color.rgb += uniforms.highlights * 0.2 * highlight_mask;
     
-    // Whites / Blacks (Levels-like behavior)
-    float black_point = -uniforms.blacks * 0.1;
-    float white_point = 1.0 - uniforms.whites * 0.2;
+    // Whites / Blacks (Levels)
+    // Dynamic Range Expansion
+    float black_point = -uniforms.blacks * uniforms.blacks_scale;
+    float white_point = 1.0 - uniforms.whites * uniforms.whites_scale;
     
     // Avoid division by zero
     if (white_point <= black_point + 0.001) white_point = black_point + 0.001;
@@ -356,7 +361,7 @@ fragment float4 fragment_main(VertexOut in [[stage_in]],
     float feather = uniforms.vignette_feather * 0.5 + 0.01; // Avoid 0
     
     // Calculate vignette factor
-    // smoothstep(edge0, edge1, x)
+    // smoothstep(radius, radius + feather, dist)
     // We want 1.0 at center, 0.0 at outside
     float vignette = 1.0 - smoothstep(radius, radius + feather, dist);
     
@@ -367,61 +372,17 @@ fragment float4 fragment_main(VertexOut in [[stage_in]],
     color.rgb *= vignette;
     
     // Film Grain
-    if (uniforms.grain_amount > 0.0) {
-        // 1. Calculate Luminance (Rec.709)
-        float lum = dot(color.rgb, float3(0.2126, 0.7152, 0.0722));
-        
-        // 2. Luminance Response Curve
-        // Grain is most visible in mid-tones (0.5), less in shadows/highlights.
-        // Smooth parabola peaking at 0.5
-        float response = 1.0 - pow(lum - 0.5, 2.0) * 4.0;
-        response = saturate(response); // Clamp to 0-1
-        
-        // 3. Generate Noise Layers (Simplex Noise)
-        // Use pixel coordinates scaled by coarseness
-        float2 uv = in.uv * float2(inputTexture.get_width(), inputTexture.get_height());
-        float coarseness = 1.0 / max(0.1, uniforms.grain_size); // Inverse scale
-        
-        // Offset UVs for each channel to simulate dye layers
-        float noiseR = snoise(uv * coarseness + float2(0.0, 0.0));
-        float noiseG = snoise(uv * coarseness + float2(5.2, 1.3));
-        float noiseB = snoise(uv * coarseness + float2(10.8, -2.5));
-        
-        // Clamp noise to avoid artifacts
-        noiseR = clamp(noiseR, -1.0, 1.0);
-        noiseG = clamp(noiseG, -1.0, 1.0);
-        noiseB = clamp(noiseB, -1.0, 1.0);
-        
-        float3 grainVector = float3(noiseR, noiseG, noiseB);
-        
-        // 4. Composite using "Soft Light" / Overlay logic
-        // Modulate strength by luminance response
-        // Increased multiplier from 0.5 to 2.0 for stronger effect
-        float finalStrength = uniforms.grain_amount * response * 2.0; 
-        
-        // Apply grain:
-        // output = input + input * grain * strength
-        color.rgb += color.rgb * grainVector * finalStrength;
-    }
+    // (Disabled per user request)
     
     // --- 5. Tone Mapping ---
-    // Ensure no negative values before tone mapping to avoid artifacts (especially with Reinhard)
+    // Tone Mapping (Standard Gamma only)
     color.rgb = max(color.rgb, float3(0.0));
-
-    if (uniforms.tonemap_mode == 1) {
-        // ACES (Cinematic)
-        color.rgb = ACESFilm(color.rgb);
-    } else if (uniforms.tonemap_mode == 2) {
-        // Reinhard (Soft)
-        color.rgb = Reinhard(color.rgb);
-        color.rgb = linear_to_srgb(color.rgb);
-    } else {
-        // Standard (Gamma 2.2)
-        color.rgb = saturate(color.rgb);
-        color.rgb = linear_to_srgb(color.rgb);
-    }
     
-    return color;
+    // Standard (Gamma 2.2 approximation)
+    color.rgb = saturate(color.rgb);
+    color.rgb = linear_to_srgb(color.rgb);
+    
+    return float4(color.rgb, 1.0);
 }
 
 // Compute Shader: Histogram

@@ -45,6 +45,8 @@ Default layout (can be reset):
 - When replacing one dialog with another, close the first before opening the second
 
 ## Image Processing Pipeline
+> [!IMPORTANT]
+> A detailed explanation of the image processing pipeline, including mathematical operations and shader logic, is available in `pipeline.md`. **You MUST read this file to understand the pipeline and keep it updated whenever changes are made to the image processing logic.**
 
 ### Processing Flow
 1. **Load**: LibRaw decodes RAW to 16-bit linear RGB
@@ -167,3 +169,7 @@ Icons should be PNG format, located in `assets/`:
 
 **Last Updated**: 2025-11-28
 **Tip**: Keep this file updated as you work on the application. Document new patterns, gotchas, and architectural decisions.
+
+### Code Hygiene
+- **Never keep old commented code around.** If code is removed or replaced, delete it completely. Use git history if retrieval is needed.
+- **Comments should describe WHAT the code is doing.** Avoid comments that describe what the code is *supposed* to do, or that reference user requests (e.g. "As requested by user"). Keep comments technical and descriptive.

@@ -33,7 +33,12 @@ struct Uniforms {
     float grain_amount;      // New
     float grain_size;        // New: Controls coarseness
     float base_exposure;
-    int tonemap_mode; // 0: Standard (Gamma), 1: Cinematic (ACES), 2: Soft (Reinhard)
+    // Removed tonemap_mode
+    
+    // Constants (passed as uniforms for consistency)
+    float contrast_pivot;
+    float blacks_scale;
+    float whites_scale;
     
     // HSL Adjustments
     int hsl_enabled; // 0 or 1
@@ -82,6 +87,7 @@ private:
     void SaveImageAsync(const std::string& filename, const std::string& format);
     void SetupLayout();
     void ComputeHistogram();
+    void CalculateAutoSettings(); // New: Auto Adjust
 
     // Platform specific helpers
     void InitMetal();
@@ -132,6 +138,10 @@ private:
     std::vector<float> m_Histogram;
     std::vector<float> m_SmoothHistogram; // For temporal smoothing
     
+    // Raw Histogram (for Auto Adjust)
+    std::vector<uint32_t> m_RawHistogram;
+    id<MTLBuffer> m_RawHistogramBuffer = nil;
+    
     // Async Loading
     std::atomic<bool> m_IsLoading{false};
     std::atomic<bool> m_TextureUploadPending{false};
@@ -168,6 +178,7 @@ private:
     
     // UI State for Presets
     bool m_ShowSavePresetDialog = false;
+    bool m_ShowPresetOverwriteConfirm = false;
     char m_NewPresetName[128] = "";
     
     // EXIF Data
@@ -176,6 +187,7 @@ private:
 
     id<MTLTexture> m_LogoTexture = nil;      // Logo
     id<MTLBuffer> m_HistogramBuffer = nil;
+    id<MTLBuffer> m_HistogramBufferDisplay = nil; // Double buffering for display
     id<MTLSamplerState> m_TextureSampler = nil; // For linear filtering
     CAMetalLayer* m_MetalLayer = nil;
     MTLRenderPassDescriptor* m_RenderPassDescriptor = nil;

@@ -98,16 +98,22 @@ void UmbriferaApp::RenderUI() {
     }
 
     // Export Options Modal
+    static bool wasPopupOpen = false;
+    bool isPopupOpen = false;
+    
     if (m_ShowExportOptions && m_ProcessedTexture) { // Only allow if image loaded
         std::string title = m_ExportFormat == "jpg" ? "JPG Export" : (m_ExportFormat == "png" ? "PNG Export" : "TIFF Export");
         ImGui::OpenPopup(title.c_str());
         ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+        m_ShowExportOptions = false; // Clear so we can detect next open
     }
     
     std::string title = m_ExportFormat == "jpg" ? "JPG Export" : (m_ExportFormat == "png" ? "PNG Export" : "TIFF Export");
     
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 10.0f));
     if (ImGui::BeginPopupModal(title.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
+        isPopupOpen = true;
+        
         // Helper for consistent spacing
         auto SeparatorBlock = []() { 
             ImGui::Dummy(ImVec2(0.0f, 10.0f)); 
@@ -144,6 +150,11 @@ void UmbriferaApp::RenderUI() {
             static int lastSubsampling = m_ExportSubsampling;
             static bool lastProgressive = m_ExportProgressive;
             static bool estimationTriggered = false;
+            
+            // Reset on dialog open (when popup just opened)
+            if (!wasPopupOpen && isPopupOpen) {
+                estimationTriggered = false;
+            }
             
             bool settingsChanged = (lastQuality != m_ExportQuality || 
                                    lastSubsampling != m_ExportSubsampling || 
@@ -354,6 +365,9 @@ void UmbriferaApp::RenderUI() {
         ImGui::EndPopup();
     }
     ImGui::PopStyleVar();
+    
+    // Update state for next frame
+    wasPopupOpen = isPopupOpen;
     
     // Overwrite Confirmation Dialog (SEPARATE from Export Options)
     if (m_ShowOverwriteConfirm) {
@@ -606,9 +620,9 @@ void UmbriferaApp::RenderUI() {
     UI_GapSmall();
 
     // Histogram Display
-    // Read back histogram data from GPU buffer
-    if (m_HistogramBuffer) {
-        uint32_t* ptr = (uint32_t*)[m_HistogramBuffer contents];
+    // Read back histogram data from GPU buffer (Use Display buffer which is stable)
+    if (m_HistogramBufferDisplay) {
+        uint32_t* ptr = (uint32_t*)[m_HistogramBufferDisplay contents];
         
         // Ensure size
         if (m_Histogram.size() != 256) m_Histogram.resize(256, 0.0f);
@@ -617,57 +631,62 @@ void UmbriferaApp::RenderUI() {
         float maxVal = 0.0f;
         
         // Find max value in the meaningful range (1-254) to avoid clipping spikes dominating
-        for (int i = 1; i < 255; i++) {
-            float count = (float)ptr[i];
-            m_Histogram[i] = count;
-            if (count > maxVal) maxVal = count;
+        for (int i = 0; i < 256; i++) {
+            float currentCount = (float)ptr[i];
+            
+            // Direct read (smoothing is handled in display loop)
+            m_Histogram[i] = currentCount;
+            
+            // Calculate max for scaling
+            if (i > 0 && i < 255) {
+                if (m_Histogram[i] > maxVal) maxVal = m_Histogram[i];
+            }
         }
-        
-        // Handle edges (0 and 255) - just copy them, they will be clamped visually
-        m_Histogram[0] = (float)ptr[0];
-        m_Histogram[255] = (float)ptr[255];
         
         if (maxVal <= 0.0f) maxVal = 1.0f;
         
-        // 2. Draw Graph
+        // 2. Draw Graph (256 Vertical Bars)
         ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
         ImVec2 canvas_size = ImVec2(ImGui::GetContentRegionAvail().x, 100); // Taller for better detail
         
         ImDrawList* draw_list = ImGui::GetWindowDrawList();
         
-        // Background
-        draw_list->AddRectFilled(canvas_pos, ImVec2(canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y), ImGui::GetColorU32(ImGuiCol_FrameBg));
+        // Background (Slightly Lighter Grey)
+        draw_list->AddRectFilled(canvas_pos, ImVec2(canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y), IM_COL32(40, 40, 40, 255));
         
-        // Draw Filled Curve
-        std::vector<ImVec2> points;
-        points.reserve(258);
-        
-        // Start point (bottom left)
-        points.push_back(ImVec2(canvas_pos.x, canvas_pos.y + canvas_size.y));
+        // Ensure smooth histogram is initialized
+        if (m_SmoothHistogram.size() != 256) {
+            m_SmoothHistogram.resize(256, 0.0f);
+        }
+
+        float dt = ImGui::GetIO().DeltaTime;
+        float speed = 20.0f; // Tunable speed
+        float alpha = 1.0f - expf(-speed * dt);
+        if (alpha > 1.0f) alpha = 1.0f;
+
+        float barWidth = canvas_size.x / 256.0f;
         
         for (int i = 0; i < 256; ++i) {
-            float x = canvas_pos.x + (float)i / 255.0f * canvas_size.x;
+            float targetHeight = m_Histogram[i] / maxVal;
+            if (targetHeight > 1.0f) targetHeight = 1.0f;
             
-            // Linear scaling relative to maxVal
-            // If a value (like 0 or 255) is > maxVal, it will go above the top (clamped)
-            float normalizedHeight = m_Histogram[i] / maxVal;
-            if (normalizedHeight > 1.0f) normalizedHeight = 1.0f;
+            // Apply smoothing
+            m_SmoothHistogram[i] = m_SmoothHistogram[i] * (1.0f - alpha) + targetHeight * alpha;
             
-            float y = canvas_pos.y + canvas_size.y - normalizedHeight * canvas_size.y;
+            float normalizedHeight = m_SmoothHistogram[i];
             
-            points.push_back(ImVec2(x, y));
-        }
-        
-        // End point (bottom right)
-        points.push_back(ImVec2(canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y));
-        
-        // Draw Fill
-        draw_list->AddConvexPolyFilled(points.data(), (int)points.size(), IM_COL32(200, 200, 200, 100)); // Light Grey, semi-transparent
-        
-        // Draw Line (Spline-like)
-        // We reuse the points but skip the first and last (bottom corners)
-        if (points.size() > 2) {
-            draw_list->AddPolyline(points.data() + 1, (int)points.size() - 2, IM_COL32(255, 255, 255, 255), 0, 1.5f);
+            if (normalizedHeight > 0.001f) {
+                float x1 = canvas_pos.x + (float)i * barWidth;
+                float x2 = canvas_pos.x + (float)(i + 1) * barWidth;
+                
+                // Ensure continuity
+                // ImGui handles subpixel coordinates, so x2 of this bin is x1 of next bin.
+                
+                float y1 = canvas_pos.y + canvas_size.y - normalizedHeight * canvas_size.y;
+                float y2 = canvas_pos.y + canvas_size.y;
+                
+                draw_list->AddRectFilled(ImVec2(x1, y1), ImVec2(x2, y2), IM_COL32(200, 200, 200, 255));
+            }
         }
         
         ImGui::Dummy(canvas_size);
@@ -686,12 +705,18 @@ void UmbriferaApp::RenderUI() {
         
         ImGui::PushID((int)i);
         if (ImGui::Button(m_Presets[i].name.c_str(), ImVec2(100, 60))) {
-            ApplyPreset(m_Presets[i]);
-            SaveSidecar(); // Save immediately when preset applied
+            // Special handling for "Auto" preset
+            if (m_Presets[i].name == "Auto") {
+                CalculateAutoSettings();
+                SaveSidecar(); // Save the auto-calculated values
+            } else {
+                ApplyPreset(m_Presets[i]);
+                SaveSidecar(); // Save immediately when preset applied
+            }
             changed = true; // Trigger image update
         }
         
-        // Context Menu for Deletion (except Default)
+        // Context Menu for Deletion (except Auto)
         if (i > 0 && ImGui::BeginPopupContextItem()) {
             if (ImGui::MenuItem("Delete")) {
                 m_Presets.erase(m_Presets.begin() + i);
@@ -815,8 +840,9 @@ void UmbriferaApp::RenderUI() {
             
             // Saturation
             float sVal = m_Uniforms.hsl_adjustments[i].y;
-            if (ImGui::SliderFloat("##Sat", &sVal, -1.0f, 1.0f, "%.3f")) {
-                m_Uniforms.hsl_adjustments[i].y = sVal;
+            float sSlider = cbrtf(sVal);
+            if (ImGui::SliderFloat("##Sat", &sSlider, -1.0f, 1.0f, "%.3f")) {
+                m_Uniforms.hsl_adjustments[i].y = sSlider * sSlider * sSlider;
                 changed = true;
             }
             ImGui::SameLine();
@@ -827,8 +853,9 @@ void UmbriferaApp::RenderUI() {
             
             // Luminance
             float lVal = m_Uniforms.hsl_adjustments[i].z;
-            if (ImGui::SliderFloat("##Lum", &lVal, -1.0f, 1.0f, "%.3f")) {
-                m_Uniforms.hsl_adjustments[i].z = lVal;
+            float lSlider = cbrtf(lVal);
+            if (ImGui::SliderFloat("##Lum", &lSlider, -1.0f, 1.0f, "%.3f")) {
+                m_Uniforms.hsl_adjustments[i].z = lSlider * lSlider * lSlider;
                 changed = true;
             }
             ImGui::SameLine();
@@ -848,7 +875,6 @@ void UmbriferaApp::RenderUI() {
     UI_Separator();
     
     // Effects
-    // ImGui::Text("Effects"); // Removed as requested
     
     // Vignette
     UI_Header("Vignette");
@@ -864,7 +890,7 @@ void UmbriferaApp::RenderUI() {
     UI_Header("Film Grain");
     ImGui::PushID("GrainControls");
     if (SliderWithReset("Amount", &m_Uniforms.grain_amount, 0.0f, 1.0f, 0.0f)) changed = true;
-    if (SliderWithReset("Size", &m_Uniforms.grain_size, 0.5f, 5.0f, 1.6f)) changed = true;
+    // Size slider removed as requested
     ImGui::PopID();
     
     // Save Preset Dialog
@@ -887,24 +913,29 @@ void UmbriferaApp::RenderUI() {
         UI_Separator();
         
         if (ImGui::Button("Save", ImVec2(120, 0)) || enterPressed) {
-            if (strlen(m_NewPresetName) > 0) {
+            std::string newName = m_NewPresetName;
+            // Trim whitespace
+            const char* ws = " \t\n\r\f\v";
+            newName.erase(newName.find_last_not_of(ws) + 1);
+            newName.erase(0, newName.find_first_not_of(ws));
+
+            if (newName.length() > 0) {
                 // Check for duplicate
                 bool exists = false;
                 for (const auto& p : m_Presets) {
-                    if (p.name == m_NewPresetName) {
+                    if (p.name == newName) {
                         exists = true;
                         break;
                     }
                 }
                 
                 if (exists) {
-                    // Close current dialog and open overwrite confirmation
+                    // Close current dialog and open overwrite confirmation via flag
                     ImGui::CloseCurrentPopup();
-                    ImGui::OpenPopup("Confirm Preset Overwrite");
-                    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+                    m_ShowPresetOverwriteConfirm = true;
                 } else {
                     Preset newPreset;
-                    newPreset.name = m_NewPresetName;
+                    newPreset.name = newName;
                     newPreset.data = m_Uniforms;
                     m_Presets.push_back(newPreset);
                     SavePresets();
@@ -920,6 +951,12 @@ void UmbriferaApp::RenderUI() {
         ImGui::EndPopup();
     }
     
+    if (m_ShowPresetOverwriteConfirm) {
+        ImGui::OpenPopup("Confirm Preset Overwrite");
+        ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+        m_ShowPresetOverwriteConfirm = false;
+    }
+
     // Overwrite Confirmation Dialog (separate, not nested)
     if (ImGui::BeginPopupModal("Confirm Preset Overwrite", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::Text("Preset already exists:");
@@ -953,15 +990,6 @@ void UmbriferaApp::RenderUI() {
     if (changed || ImGui::IsItemDeactivatedAfterEdit()) {
         SaveSidecar();
     }
-    
-    ImGui::Dummy(ImVec2(0.0f, 20.0f));
-    ImGui::Separator();
-    ImGui::Dummy(ImVec2(0.0f, 20.0f));
-    
-    // Tone Mapping Selector
-    const char* items[] = { "Standard (Gamma 2.2)", "Cinematic (ACES)", "Soft (Reinhard)" };
-    changed |= ImGui::Combo("Tone Curve", &m_Uniforms.tonemap_mode, items, IM_ARRAYSIZE(items));
-    
     ImGui::Dummy(ImVec2(0.0f, 20.0f));
     ImGui::Separator();
     ImGui::Dummy(ImVec2(0.0f, 20.0f));

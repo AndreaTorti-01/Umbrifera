@@ -35,7 +35,11 @@ UmbriferaApp::UmbriferaApp() {
     m_Uniforms.vignette_size = 0.5f;
     m_Uniforms.grain_amount = 0.0f;
     m_Uniforms.grain_size = 1.6f; // Default coarseness
-    m_Uniforms.tonemap_mode = 1; // Default to ACES
+    
+    // Initialize Constants
+    m_Uniforms.contrast_pivot = 0.18f; // Mid-grey
+    m_Uniforms.blacks_scale = 0.1f;
+    m_Uniforms.whites_scale = 0.2f;
     
     m_Uniforms.hsl_enabled = 0;
     for(int i=0; i<15; ++i) m_Uniforms.hsl_adjustments[i] = {0.0f, 0.0f, 0.0f, 0.0f};
@@ -193,8 +197,6 @@ void UmbriferaApp::InitGraphics() {
     InitMetal();
     // Load Logo
     LoadLogo("assets/logo.png");
-    // Start loading the default image
-    // LoadRawImage("image.NEF"); // Removed as per request
 }
 
 void UmbriferaApp::LoadLogo(const std::string& path) {
@@ -283,6 +285,7 @@ void UmbriferaApp::OpenExportDialog(const std::string& format) {
 
     m_ExportFormat = format;
     m_ShowExportOptions = true;
+    // Note: m_ShowExportOptions will be cleared after the popup is opened in RenderUI
 }
 
 // --- Serialization ---
@@ -305,7 +308,9 @@ std::string UmbriferaApp::SerializeUniforms(const Uniforms& u) {
     ss << "vignette_size=" << u.vignette_size << "\n";
     ss << "grain_amount=" << u.grain_amount << "\n";
     ss << "base_exposure=" << u.base_exposure << "\n";
-    ss << "tonemap_mode=" << u.tonemap_mode << "\n";
+    ss << "base_exposure=" << u.base_exposure << "\n";
+    // ss << "tonemap_mode=" << u.tonemap_mode << "\n"; // Removed
+    ss << "hsl_enabled=" << u.hsl_enabled << "\n";
     ss << "hsl_enabled=" << u.hsl_enabled << "\n";
     
     for (int i = 0; i < 15; i++) {
@@ -342,7 +347,9 @@ void UmbriferaApp::DeserializeUniforms(const std::string& data, Uniforms& u) {
             else if (key == "vignette_size") u.vignette_size = std::clamp(std::stof(valStr), 0.0f, 1.0f);
             else if (key == "grain_amount") u.grain_amount = std::clamp(std::stof(valStr), 0.0f, 1.0f);
             else if (key == "base_exposure") u.base_exposure = std::stof(valStr); // No strict clamp, but usually > 0
-            else if (key == "tonemap_mode") u.tonemap_mode = std::clamp(std::stoi(valStr), 0, 2);
+            else if (key == "base_exposure") u.base_exposure = std::stof(valStr); // No strict clamp, but usually > 0
+            // else if (key == "tonemap_mode") u.tonemap_mode = std::clamp(std::stoi(valStr), 0, 2); // Removed
+            else if (key == "hsl_enabled") u.hsl_enabled = std::clamp(std::stoi(valStr), 0, 1);
             else if (key == "hsl_enabled") u.hsl_enabled = std::clamp(std::stoi(valStr), 0, 1);
             else if (key.rfind("hsl_", 0) == 0) {
                 // Parse hsl_N=x,y,z
@@ -385,10 +392,14 @@ void UmbriferaApp::LoadSidecar() {
         DeserializeUniforms(buffer.str(), m_Uniforms);
         in.close();
         
-        // Ensure base exposure is preserved if it was calculated from image
-        // Actually, sidecar overwrites everything. If sidecar has base_exposure, use it.
-        // But if sidecar is from a different image (unlikely), it might be wrong.
-        // Assuming sidecar belongs to this image.
+        // Ensure constants are always set (they should never change)
+        m_Uniforms.contrast_pivot = 0.18f;
+        m_Uniforms.blacks_scale = 0.1f;
+        m_Uniforms.whites_scale = 0.2f;
+    } else {
+        // No sidecar exists, apply Auto settings
+        CalculateAutoSettings();
+        SaveSidecar(); // Save the auto-calculated values
     }
 }
 
@@ -397,30 +408,35 @@ void UmbriferaApp::LoadSidecar() {
 void UmbriferaApp::LoadPresets() {
     m_Presets.clear();
     
-    // Default Preset
-    Preset defaultPreset;
-    defaultPreset.name = "Default";
+    // Auto Preset (Special - calls CalculateAutoSettings)
+    Preset autoPreset;
+    autoPreset.name = "Auto";
     // Initialize with default values
-    defaultPreset.data.exposure = 0.0f;
-    defaultPreset.data.contrast = 1.0f;
-    defaultPreset.data.highlights = 0.0f;
-    defaultPreset.data.shadows = 0.0f;
-    defaultPreset.data.whites = 0.0f;
-    defaultPreset.data.blacks = 0.0f;
-    defaultPreset.data.saturation = 1.0f;
-    defaultPreset.data.vibrance = 0.0f;
-    defaultPreset.data.hue_offset = 0.0f;
-    defaultPreset.data.temperature = 0.0f;
-    defaultPreset.data.tint = 0.0f;
-    defaultPreset.data.vignette_strength = 0.0f;
-    defaultPreset.data.vignette_feather = 0.5f;
-    defaultPreset.data.vignette_size = 0.5f;
-    defaultPreset.data.grain_amount = 0.0f;
-    defaultPreset.data.tonemap_mode = 1; // ACES
-    defaultPreset.data.hsl_enabled = 0;
-    for(int i=0; i<15; ++i) defaultPreset.data.hsl_adjustments[i] = {0.0f, 0.0f, 0.0f, 0.0f};
+    autoPreset.data.exposure = 0.0f;
+    autoPreset.data.contrast = 1.0f;
+    autoPreset.data.highlights = 0.0f;
+    autoPreset.data.shadows = 0.0f;
+    autoPreset.data.whites = 0.0f;
+    autoPreset.data.blacks = 0.0f;
+    autoPreset.data.saturation = 1.0f;
+    autoPreset.data.vibrance = 0.0f;
+    autoPreset.data.hue_offset = 0.0f;
+    autoPreset.data.temperature = 0.0f;
+    autoPreset.data.tint = 0.0f;
+    autoPreset.data.vignette_strength = 0.0f;
+    autoPreset.data.vignette_feather = 0.5f;
+    autoPreset.data.vignette_size = 0.5f;
+    autoPreset.data.grain_amount = 0.0f;
+    autoPreset.data.hsl_enabled = 0;
     
-    m_Presets.push_back(defaultPreset);
+    // Constants
+    autoPreset.data.contrast_pivot = 0.18f;
+    autoPreset.data.blacks_scale = 0.1f;
+    autoPreset.data.whites_scale = 0.2f;
+    autoPreset.data.hsl_enabled = 0;
+    for(int i=0; i<15; ++i) autoPreset.data.hsl_adjustments[i] = {0.0f, 0.0f, 0.0f, 0.0f};
+    
+    m_Presets.push_back(autoPreset);
     
     // Load from file
     std::ifstream in("presets.txt");
@@ -464,10 +480,109 @@ void UmbriferaApp::SavePresets() {
 }
 
 void UmbriferaApp::ApplyPreset(const Preset& preset) {
-    // Preserve base exposure as it is image-dependent
+    // Preserve base exposure and constants as they should never change
     float currentBaseExposure = m_Uniforms.base_exposure;
+    float currentContrastPivot = m_Uniforms.contrast_pivot;
+    float currentBlacksScale = m_Uniforms.blacks_scale;
+    float currentWhitesScale = m_Uniforms.whites_scale;
+    
     m_Uniforms = preset.data;
+    
     m_Uniforms.base_exposure = currentBaseExposure;
+    m_Uniforms.contrast_pivot = currentContrastPivot;
+    m_Uniforms.blacks_scale = currentBlacksScale;
+    m_Uniforms.whites_scale = currentWhitesScale;
+}
+
+void UmbriferaApp::CalculateAutoSettings() {
+    if (m_RawHistogram.empty()) return;
+    
+    // Analyze Raw Histogram (256 bins)
+    // We want to find the range of the data and the mean.
+    
+    long totalPixels = 0;
+    long sumLuma = 0;
+    int minBin = -1;
+    int maxBin = -1;
+    
+    for (int i = 0; i < 256; i++) {
+        uint32_t count = m_RawHistogram[i];
+        if (count > 0) {
+            if (minBin == -1) minBin = i;
+            maxBin = i;
+            totalPixels += count;
+            sumLuma += (long)count * i;
+        }
+    }
+    
+    if (totalPixels == 0) return;
+    
+    float meanLuma = (float)sumLuma / totalPixels / 255.0f; // 0.0 - 1.0
+    float minLuma = (float)minBin / 255.0f;
+    float maxLuma = (float)maxBin / 255.0f;
+    
+    // 1. Auto Exposure
+    // Target mean luma around mid-grey (0.18) but slightly brighter for "pleasing" look (e.g. 0.25)
+    // But raw data is linear, so 0.18 is actually quite dark visually.
+    // Let's target 0.18 in linear space.
+    float targetMean = 0.18f;
+    
+    // Avoid division by zero or extreme values
+    if (meanLuma < 0.001f) meanLuma = 0.001f;
+    
+    // Exposure shift = log2(Target / Current)
+    float exposureShift = log2f(targetMean / meanLuma);
+    
+    // Clamp exposure shift to reasonable range
+    exposureShift = std::clamp(exposureShift, -3.0f, 3.0f);
+    
+    m_Uniforms.exposure = exposureShift;
+    
+    // 2. Auto Contrast
+    // Default to slightly boosted contrast
+    m_Uniforms.contrast = 1.1f;
+    
+    // 3. Auto Blacks/Whites (Dynamic Range Expansion)
+    // We want to stretch the histogram to fill 0.0 - 1.0
+    // After exposure shift, the new min/max will be:
+    // newMin = minLuma * 2^exposure
+    // newMax = maxLuma * 2^exposure
+    
+    float gain = powf(2.0f, exposureShift);
+    float newMin = minLuma * gain;
+    float newMax = maxLuma * gain;
+    
+    // Blacks: We want newMin to map to 0.0
+    // Formula: (x - black_point) / (white_point - black_point)
+    // black_point = -blacks * 0.1
+    // So we want -blacks * 0.1 approx newMin
+    // blacks = -newMin / 0.1 = -newMin * 10
+    
+    // Whites: We want newMax to map to 1.0
+    // white_point = 1.0 - whites * 0.2
+    // So we want 1.0 - whites * 0.2 approx newMax
+    // whites * 0.2 = 1.0 - newMax
+    // whites = (1.0 - newMax) / 0.2 = (1.0 - newMax) * 5
+    
+    float autoBlacks = -newMin * 10.0f;
+    float autoWhites = (1.0f - newMax) * 5.0f;
+    
+    m_Uniforms.blacks = std::clamp(autoBlacks, -0.5f, 0.5f); // Don't crush too much
+    m_Uniforms.whites = std::clamp(autoWhites, -0.5f, 0.5f); // Don't blow out too much
+    
+    // 4. Auto Vibrance/Saturation
+    // Just set reasonable defaults
+    m_Uniforms.vibrance = 0.2f;
+    m_Uniforms.saturation = 1.0f;
+    
+    // Reset others
+    m_Uniforms.highlights = 0.0f;
+    m_Uniforms.shadows = 0.0f;
+    m_Uniforms.temperature = 0.0f;
+    m_Uniforms.tint = 0.0f;
+    
+    // Trigger update
+    m_ImageDirty = true;
 }
 @implementation MenuHandler
 - (void)exportJpg:(id)sender {

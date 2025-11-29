@@ -65,6 +65,10 @@ void UmbriferaApp::LoadRawImage(const std::string& path) {
             // use_camera_wb = 1: Use the White Balance settings from the camera.
             RawProcessor->imgdata.params.use_camera_wb = 1;
 
+            // output_color = 1: sRGB. Since we set gamma to 1.0, this gives us Linear sRGB.
+            // This ensures consistent color space.
+            RawProcessor->imgdata.params.output_color = 1;
+
             // 4. Process the raw data into an image
             if (RawProcessor->dcraw_process() != LIBRAW_SUCCESS) {
                 std::cerr << "Failed to process file: " << path << std::endl;
@@ -87,7 +91,10 @@ void UmbriferaApp::LoadRawImage(const std::string& path) {
             std::cout << "Image decoded: " << width << "x" << height << " (16-bit Linear)" << std::endl;
             
             // Get the white level and black level
-            float white_level = (float)RawProcessor->imgdata.color.maximum;
+            // Use linear_max if available (more accurate for some cameras), else maximum
+            float white_level = (float)RawProcessor->imgdata.color.linear_max[0];
+            if (white_level <= 0.0f) white_level = (float)RawProcessor->imgdata.color.maximum;
+            
             float black_level = (float)RawProcessor->imgdata.color.black;
             if (white_level <= 0.0f) white_level = 65535.0f;
             
@@ -149,16 +156,14 @@ void UmbriferaApp::LoadRawImage(const std::string& path) {
             }
 
             // Calculate Base Exposure (Auto Exposure)malize the image in the shader
-            // We want (white - black) to map to 1.0 (65535)
-            // Gain = 65535 / (white - black)
-            // Exposure = log2(Gain)
-            float range = white_level - black_level;
-            if (range < 1.0f) range = 1.0f;
-            float gain = 65535.0f / range;
-            float base_exposure = log2f(gain);
+            // LibRaw's dcraw_process automatically scales the image to 16-bit range (0-65535)
+            // and subtracts the black level.
+            // So we don't need to calculate gain or base exposure to normalize it.
+            // We set base_exposure to 0.0f (no adjustment).
+            float base_exposure = 0.0f;
             
             std::cout << "Black Level: " << black_level << ", White Level: " << white_level << std::endl;
-            std::cout << "Calculated Base Exposure: " << base_exposure << " stops" << std::endl;
+            std::cout << "Base Exposure set to 0.0 (Linear Raw)" << std::endl;
 
             // We use uint16_t because we requested 16-bit output.
             // 4 channels: Red, Green, Blue, Alpha
@@ -183,20 +188,13 @@ void UmbriferaApp::LoadRawImage(const std::string& path) {
                 uint16_t g_raw = raw_pixels[i*3 + 1];
                 uint16_t b_raw = raw_pixels[i*3 + 2];
                 
-                // Subtract Black Level (Fixes "Blacks are grey")
-                // We do NOT scale here. We leave the data in its original bit depth (shifted by black).
-                int32_t r_val = (int32_t)r_raw - (int32_t)black_level;
-                int32_t g_val = (int32_t)g_raw - (int32_t)black_level;
-                int32_t b_val = (int32_t)b_raw - (int32_t)black_level;
+                // LibRaw has already subtracted the black level and scaled to 16-bit.
+                // So we just use the values directly.
                 
-                if (r_val < 0) r_val = 0;
-                if (g_val < 0) g_val = 0;
-                if (b_val < 0) b_val = 0;
-
                 // Store in our vector as RGBA
-                rgbaData[i*4 + 0] = (uint16_t)r_val;
-                rgbaData[i*4 + 1] = (uint16_t)g_val;
-                rgbaData[i*4 + 2] = (uint16_t)b_val;
+                rgbaData[i*4 + 0] = r_raw;
+                rgbaData[i*4 + 1] = g_raw;
+                rgbaData[i*4 + 2] = b_raw;
                 rgbaData[i*4 + 3] = 65535; // Full Alpha in 16-bit (2^16 - 1)
             }
             

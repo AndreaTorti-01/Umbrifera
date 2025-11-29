@@ -29,7 +29,14 @@ void UmbriferaApp::InitMetal() {
     m_RenderPassDescriptor = [MTLRenderPassDescriptor new];
 
     // 3. Create Histogram Buffer (Shared memory between CPU and GPU)
+    // Double buffering to prevent reading zeros while GPU clears/writes
     m_HistogramBuffer = [m_Device newBufferWithLength:256 * sizeof(uint32_t) options:MTLResourceStorageModeShared];
+    // Double buffering to prevent reading zeros while GPU clears/writes
+    m_HistogramBuffer = [m_Device newBufferWithLength:256 * sizeof(uint32_t) options:MTLResourceStorageModeShared];
+    m_HistogramBufferDisplay = [m_Device newBufferWithLength:256 * sizeof(uint32_t) options:MTLResourceStorageModeShared];
+    
+    // Raw Histogram Buffer (Shared)
+    m_RawHistogramBuffer = [m_Device newBufferWithLength:256 * sizeof(uint32_t) options:MTLResourceStorageModeShared];
 
     // 4. Compile Shaders
     NSError* error = nil;
@@ -88,6 +95,11 @@ void UmbriferaApp::CleanupMetal() {
 void UmbriferaApp::ProcessImage() {
     if (!m_RawTexture || !m_ProcessedTexture) return;
 
+    // Swap Histogram Buffers
+    // The buffer we just displayed becomes the new write target
+    // The buffer we just wrote to becomes the new display source
+    std::swap(m_HistogramBuffer, m_HistogramBufferDisplay);
+
     // Create a command buffer for GPU commands
     id<MTLCommandBuffer> cb = [m_CommandQueue commandBuffer];
 
@@ -143,6 +155,18 @@ void UmbriferaApp::ProcessImage() {
         
         [ce dispatchThreadgroups:threadgroups threadsPerThreadgroup:threadsPerThreadgroup];
         [ce endEncoding];
+        
+        // --- Pass 3: Blit Histogram to Display Buffer ---
+        // This ensures the UI reads a stable, fully computed histogram from the previous frame (or this frame, synchronized)
+        // Since we use StorageModeShared, the CPU can read this buffer directly.
+        // We copy from the working buffer (m_HistogramBuffer) to the display buffer (m_HistogramBufferDisplay).
+        if (m_HistogramBufferDisplay) {
+            id<MTLBlitCommandEncoder> blitHist = [cb blitCommandEncoder];
+            [blitHist copyFromBuffer:m_HistogramBuffer sourceOffset:0 
+                            toBuffer:m_HistogramBufferDisplay destinationOffset:0 
+                                size:256 * sizeof(uint32_t)];
+            [blitHist endEncoding];
+        }
     }
 
     [cb commit];
@@ -197,6 +221,37 @@ void UmbriferaApp::RenderFrame() {
             
             // Initial Process
             m_ImageDirty = true;
+            
+            // Compute Raw Histogram immediately for Auto Adjust
+            if (m_HistogramPSO && m_RawHistogramBuffer && m_RawTexture) {
+                id<MTLCommandBuffer> cb = [m_CommandQueue commandBuffer];
+                
+                // Clear Buffer
+                id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+                [blit fillBuffer:m_RawHistogramBuffer range:NSMakeRange(0, 256 * sizeof(uint32_t)) value:0];
+                [blit endEncoding];
+                
+                // Compute
+                id<MTLComputeCommandEncoder> ce = [cb computeCommandEncoder];
+                [ce setComputePipelineState:m_HistogramPSO];
+                [ce setTexture:m_RawTexture atIndex:0]; // Use Raw Texture
+                [ce setBuffer:m_RawHistogramBuffer offset:0 atIndex:0];
+                
+                NSUInteger w = m_RawTexture.width;
+                NSUInteger h = m_RawTexture.height;
+                MTLSize threadsPerThreadgroup = MTLSizeMake(16, 16, 1);
+                MTLSize threadgroups = MTLSizeMake((w + 15) / 16, (h + 15) / 16, 1);
+                
+                [ce dispatchThreadgroups:threadgroups threadsPerThreadgroup:threadsPerThreadgroup];
+                [ce endEncoding];
+                
+                [cb commit];
+                [cb waitUntilCompleted]; // Wait so we can read it immediately
+                
+                // Read back to CPU vector
+                uint32_t* ptr = (uint32_t*)[m_RawHistogramBuffer contents];
+                m_RawHistogram.assign(ptr, ptr + 256);
+            }
         }
         
         UpdateUniforms();
