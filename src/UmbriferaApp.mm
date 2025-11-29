@@ -8,6 +8,7 @@
 #include "imgui_impl_metal.h"
 #include <GLFW/glfw3.h>
 #include <GLFW/glfw3native.h>
+#include <iostream>
 
 // Error callback for GLFW (Windowing library)
 static void glfw_error_callback(int error, const char* description)
@@ -25,7 +26,21 @@ UmbriferaApp::UmbriferaApp() {
     m_Uniforms.blacks = 0.0f;
     m_Uniforms.saturation = 1.0f;
     m_Uniforms.base_exposure = 0.0f;
+    m_Uniforms.vibrance = 0.0f;
+    m_Uniforms.hue_offset = 0.0f;
+    m_Uniforms.temperature = 0.0f;
+    m_Uniforms.tint = 0.0f;
+    m_Uniforms.vignette_strength = 0.0f;
+    m_Uniforms.vignette_feather = 0.5f;
+    m_Uniforms.vignette_size = 0.5f;
+    m_Uniforms.grain_amount = 0.0f;
+    m_Uniforms.grain_size = 1.6f; // Default coarseness
     m_Uniforms.tonemap_mode = 1; // Default to ACES
+    
+    m_Uniforms.hsl_enabled = 0;
+    for(int i=0; i<15; ++i) m_Uniforms.hsl_adjustments[i] = {0.0f, 0.0f, 0.0f, 0.0f};
+    
+    LoadPresets();
     
     m_FileNavigator = std::make_unique<FileNavigator>();
 }
@@ -176,8 +191,51 @@ void UmbriferaApp::InitImGui() {
 
 void UmbriferaApp::InitGraphics() {
     InitMetal();
+    // Load Logo
+    LoadLogo("assets/logo.png");
     // Start loading the default image
     // LoadRawImage("image.NEF"); // Removed as per request
+}
+
+void UmbriferaApp::LoadLogo(const std::string& path) {
+    NSString* nsPath = [NSString stringWithUTF8String:path.c_str()];
+    NSImage* image = [[NSImage alloc] initWithContentsOfFile:nsPath];
+    if (!image) {
+        // Try absolute path if relative fails (dev environment)
+        NSString* currentDir = [[NSFileManager defaultManager] currentDirectoryPath];
+        NSString* absPath = [currentDir stringByAppendingPathComponent:nsPath];
+        image = [[NSImage alloc] initWithContentsOfFile:absPath];
+    }
+    
+    if (image) {
+        // Convert to CGImage
+        CGImageRef cgImage = [image CGImageForProposedRect:nil context:nil hints:nil];
+        NSUInteger width = CGImageGetWidth(cgImage);
+        NSUInteger height = CGImageGetHeight(cgImage);
+        
+        // Create Metal Texture
+        MTLTextureDescriptor* textureDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:width height:height mipmapped:YES];
+        m_LogoTexture = [m_Device newTextureWithDescriptor:textureDescriptor];
+        
+        // Get raw data
+        NSBitmapImageRep* rep = [[NSBitmapImageRep alloc] initWithCGImage:cgImage];
+        // Ensure RGBA
+        // This might be BGRA or RGBA depending on source.
+        // Let's assume standard RGBA for now or check format.
+        // Actually NSBitmapImageRep bitmapData gives raw bytes.
+        
+        MTLRegion region = MTLRegionMake2D(0, 0, width, height);
+        [m_LogoTexture replaceRegion:region mipmapLevel:0 withBytes:[rep bitmapData] bytesPerRow:[rep bytesPerRow]];
+        
+        // Generate mipmaps for smooth scaling
+        id<MTLCommandBuffer> commandBuffer = [m_CommandQueue commandBuffer];
+        id<MTLBlitCommandEncoder> blitEncoder = [commandBuffer blitCommandEncoder];
+        [blitEncoder generateMipmapsForTexture:m_LogoTexture];
+        [blitEncoder endEncoding];
+        [commandBuffer commit];
+    } else {
+        std::cerr << "Failed to load logo: " << path << std::endl;
+    }
 }
 
 void UmbriferaApp::Run() {
@@ -227,6 +285,190 @@ void UmbriferaApp::OpenExportDialog(const std::string& format) {
     m_ShowExportOptions = true;
 }
 
+// --- Serialization ---
+
+std::string UmbriferaApp::SerializeUniforms(const Uniforms& u) {
+    std::stringstream ss;
+    ss << "exposure=" << u.exposure << "\n";
+    ss << "contrast=" << u.contrast << "\n";
+    ss << "highlights=" << u.highlights << "\n";
+    ss << "shadows=" << u.shadows << "\n";
+    ss << "whites=" << u.whites << "\n";
+    ss << "blacks=" << u.blacks << "\n";
+    ss << "saturation=" << u.saturation << "\n";
+    ss << "vibrance=" << u.vibrance << "\n";
+    ss << "hue_offset=" << u.hue_offset << "\n";
+    ss << "temperature=" << u.temperature << "\n";
+    ss << "tint=" << u.tint << "\n";
+    ss << "vignette_strength=" << u.vignette_strength << "\n";
+    ss << "vignette_feather=" << u.vignette_feather << "\n";
+    ss << "vignette_size=" << u.vignette_size << "\n";
+    ss << "grain_amount=" << u.grain_amount << "\n";
+    ss << "base_exposure=" << u.base_exposure << "\n";
+    ss << "tonemap_mode=" << u.tonemap_mode << "\n";
+    ss << "hsl_enabled=" << u.hsl_enabled << "\n";
+    
+    for (int i = 0; i < 15; i++) {
+        ss << "hsl_" << i << "=" << u.hsl_adjustments[i].x << "," << u.hsl_adjustments[i].y << "," << u.hsl_adjustments[i].z << "\n";
+    }
+    
+    return ss.str();
+}
+
+void UmbriferaApp::DeserializeUniforms(const std::string& data, Uniforms& u) {
+    std::stringstream ss(data);
+    std::string line;
+    while (std::getline(ss, line)) {
+        size_t eqPos = line.find('=');
+        if (eqPos == std::string::npos) continue;
+        
+        std::string key = line.substr(0, eqPos);
+        std::string valStr = line.substr(eqPos + 1);
+        
+        try {
+            if (key == "exposure") u.exposure = std::clamp(std::stof(valStr), -5.0f, 5.0f);
+            else if (key == "contrast") u.contrast = std::clamp(std::stof(valStr), 0.5f, 1.5f);
+            else if (key == "highlights") u.highlights = std::clamp(std::stof(valStr), -1.0f, 1.0f);
+            else if (key == "shadows") u.shadows = std::clamp(std::stof(valStr), -1.0f, 1.0f);
+            else if (key == "whites") u.whites = std::clamp(std::stof(valStr), -1.0f, 1.0f);
+            else if (key == "blacks") u.blacks = std::clamp(std::stof(valStr), -1.0f, 1.0f);
+            else if (key == "saturation") u.saturation = std::clamp(std::stof(valStr), 0.0f, 2.0f);
+            else if (key == "vibrance") u.vibrance = std::clamp(std::stof(valStr), -1.0f, 1.0f);
+            else if (key == "hue_offset") u.hue_offset = std::clamp(std::stof(valStr), -0.5f, 0.5f);
+            else if (key == "temperature") u.temperature = std::clamp(std::stof(valStr), -1.0f, 1.0f);
+            else if (key == "tint") u.tint = std::clamp(std::stof(valStr), -1.0f, 1.0f);
+            else if (key == "vignette_strength") u.vignette_strength = std::clamp(std::stof(valStr), 0.0f, 1.0f);
+            else if (key == "vignette_feather") u.vignette_feather = std::clamp(std::stof(valStr), 0.0f, 1.0f);
+            else if (key == "vignette_size") u.vignette_size = std::clamp(std::stof(valStr), 0.0f, 1.0f);
+            else if (key == "grain_amount") u.grain_amount = std::clamp(std::stof(valStr), 0.0f, 1.0f);
+            else if (key == "base_exposure") u.base_exposure = std::stof(valStr); // No strict clamp, but usually > 0
+            else if (key == "tonemap_mode") u.tonemap_mode = std::clamp(std::stoi(valStr), 0, 2);
+            else if (key == "hsl_enabled") u.hsl_enabled = std::clamp(std::stoi(valStr), 0, 1);
+            else if (key.rfind("hsl_", 0) == 0) {
+                // Parse hsl_N=x,y,z
+                int index = std::stoi(key.substr(4));
+                if (index >= 0 && index < 15) {
+                    size_t c1 = valStr.find(',');
+                    size_t c2 = valStr.find(',', c1 + 1);
+                    if (c1 != std::string::npos && c2 != std::string::npos) {
+                        u.hsl_adjustments[index].x = std::clamp(std::stof(valStr.substr(0, c1)), -0.1f, 0.1f); // Hue is small range
+                        u.hsl_adjustments[index].y = std::clamp(std::stof(valStr.substr(c1 + 1, c2 - c1 - 1)), -1.0f, 1.0f);
+                        u.hsl_adjustments[index].z = std::clamp(std::stof(valStr.substr(c2 + 1)), -1.0f, 1.0f);
+                    }
+                }
+            }
+        } catch (...) {
+            // Ignore parsing errors and keep defaults/current values
+        }
+    }
+}
+
+void UmbriferaApp::SaveSidecar() {
+    if (m_LoadedImagePath.empty()) return;
+    
+    std::string sidecarPath = m_LoadedImagePath + ".xmp";
+    std::ofstream out(sidecarPath);
+    if (out.is_open()) {
+        out << SerializeUniforms(m_Uniforms);
+        out.close();
+    }
+}
+
+void UmbriferaApp::LoadSidecar() {
+    if (m_LoadedImagePath.empty()) return;
+    
+    std::string sidecarPath = m_LoadedImagePath + ".xmp";
+    std::ifstream in(sidecarPath);
+    if (in.is_open()) {
+        std::stringstream buffer;
+        buffer << in.rdbuf();
+        DeserializeUniforms(buffer.str(), m_Uniforms);
+        in.close();
+        
+        // Ensure base exposure is preserved if it was calculated from image
+        // Actually, sidecar overwrites everything. If sidecar has base_exposure, use it.
+        // But if sidecar is from a different image (unlikely), it might be wrong.
+        // Assuming sidecar belongs to this image.
+    }
+}
+
+// --- Presets ---
+
+void UmbriferaApp::LoadPresets() {
+    m_Presets.clear();
+    
+    // Default Preset
+    Preset defaultPreset;
+    defaultPreset.name = "Default";
+    // Initialize with default values
+    defaultPreset.data.exposure = 0.0f;
+    defaultPreset.data.contrast = 1.0f;
+    defaultPreset.data.highlights = 0.0f;
+    defaultPreset.data.shadows = 0.0f;
+    defaultPreset.data.whites = 0.0f;
+    defaultPreset.data.blacks = 0.0f;
+    defaultPreset.data.saturation = 1.0f;
+    defaultPreset.data.vibrance = 0.0f;
+    defaultPreset.data.hue_offset = 0.0f;
+    defaultPreset.data.temperature = 0.0f;
+    defaultPreset.data.tint = 0.0f;
+    defaultPreset.data.vignette_strength = 0.0f;
+    defaultPreset.data.vignette_feather = 0.5f;
+    defaultPreset.data.vignette_size = 0.5f;
+    defaultPreset.data.grain_amount = 0.0f;
+    defaultPreset.data.tonemap_mode = 1; // ACES
+    defaultPreset.data.hsl_enabled = 0;
+    for(int i=0; i<15; ++i) defaultPreset.data.hsl_adjustments[i] = {0.0f, 0.0f, 0.0f, 0.0f};
+    
+    m_Presets.push_back(defaultPreset);
+    
+    // Load from file
+    std::ifstream in("presets.txt");
+    if (in.is_open()) {
+        std::string line;
+        Preset currentPreset;
+        std::string currentData;
+        bool readingData = false;
+        
+        while (std::getline(in, line)) {
+            if (line.rfind("PRESET:", 0) == 0) {
+                if (readingData) {
+                    DeserializeUniforms(currentData, currentPreset.data);
+                    m_Presets.push_back(currentPreset);
+                    currentData.clear();
+                }
+                currentPreset.name = line.substr(7);
+                readingData = true;
+            } else if (readingData) {
+                currentData += line + "\n";
+            }
+        }
+        if (readingData) {
+            DeserializeUniforms(currentData, currentPreset.data);
+            m_Presets.push_back(currentPreset);
+        }
+        in.close();
+    }
+}
+
+void UmbriferaApp::SavePresets() {
+    std::ofstream out("presets.txt");
+    if (out.is_open()) {
+        // Skip default preset (index 0)
+        for (size_t i = 1; i < m_Presets.size(); i++) {
+            out << "PRESET:" << m_Presets[i].name << "\n";
+            out << SerializeUniforms(m_Presets[i].data);
+        }
+        out.close();
+    }
+}
+
+void UmbriferaApp::ApplyPreset(const Preset& preset) {
+    // Preserve base exposure as it is image-dependent
+    float currentBaseExposure = m_Uniforms.base_exposure;
+    m_Uniforms = preset.data;
+    m_Uniforms.base_exposure = currentBaseExposure;
+}
 @implementation MenuHandler
 - (void)exportJpg:(id)sender {
     if (_app) {

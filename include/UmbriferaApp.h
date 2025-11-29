@@ -23,8 +23,31 @@ struct Uniforms {
     float whites;
     float blacks;
     float saturation;
+    float vibrance;      // New
+    float hue_offset;    // New
+    float temperature;   // New
+    float tint;          // New
+    float vignette_strength; // New
+    float vignette_feather;  // New
+    float vignette_size;     // New
+    float grain_amount;      // New
+    float grain_size;        // New: Controls coarseness
     float base_exposure;
     int tonemap_mode; // 0: Standard (Gamma), 1: Cinematic (ACES), 2: Soft (Reinhard)
+    
+    // HSL Adjustments
+    int hsl_enabled; // 0 or 1
+    // 15 colors * 3 params (Hue, Sat, Lum) = 45 floats
+    // We can pack them into arrays.
+    // Metal arrays in structs need careful alignment.
+    // float hsl_hue[15];
+    // float hsl_sat[15];
+    // float hsl_lum[15];
+    // Metal arrays are aligned to 16 bytes (float4).
+    // It's safer to use a fixed size array of float4 where x=h, y=s, z=l, w=unused.
+    // 15 * 16 bytes = 240 bytes.
+    vector_float4 hsl_adjustments[15]; 
+    
     float padding[3]; // Alignment
 };
 
@@ -47,6 +70,7 @@ private:
     void InitWindow();
     void InitImGui();
     void InitGraphics();
+    void LoadLogo(const std::string& path);
     
     void RenderFrame();
     void RenderUI();
@@ -106,6 +130,7 @@ private:
 
     // Histogram
     std::vector<float> m_Histogram;
+    std::vector<float> m_SmoothHistogram; // For temporal smoothing
     
     // Async Loading
     std::atomic<bool> m_IsLoading{false};
@@ -124,6 +149,32 @@ private:
     id<MTLComputePipelineState> m_HistogramPSO = nil;
     id<MTLTexture> m_RawTexture = nil;       // Source (Immutable)
     id<MTLTexture> m_ProcessedTexture = nil; // Destination (Render Target)
+    
+    // Presets
+    struct Preset {
+        std::string name;
+        Uniforms data;
+    };
+    std::vector<Preset> m_Presets;
+    void LoadPresets();
+    void SavePresets();
+    void ApplyPreset(const Preset& preset);
+    
+    // Sidecar
+    void SaveSidecar();
+    void LoadSidecar();
+    std::string SerializeUniforms(const Uniforms& u);
+    void DeserializeUniforms(const std::string& data, Uniforms& u);
+    
+    // UI State for Presets
+    bool m_ShowSavePresetDialog = false;
+    char m_NewPresetName[128] = "";
+    
+    // EXIF Data
+    std::string m_ExifString;  // Top-left: Camera, ISO, Shutter, Aperture, Focal Length
+    std::string m_ExifString2; // Bottom-right: GPS, Date/Time
+
+    id<MTLTexture> m_LogoTexture = nil;      // Logo
     id<MTLBuffer> m_HistogramBuffer = nil;
     id<MTLSamplerState> m_TextureSampler = nil; // For linear filtering
     CAMetalLayer* m_MetalLayer = nil;

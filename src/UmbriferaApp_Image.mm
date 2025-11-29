@@ -91,7 +91,64 @@ void UmbriferaApp::LoadRawImage(const std::string& path) {
             float black_level = (float)RawProcessor->imgdata.color.black;
             if (white_level <= 0.0f) white_level = 65535.0f;
             
-            // Calculate base exposure to normalize the image in the shader
+            // Extract EXIF
+            m_ExifString = "";
+            if (RawProcessor->imgdata.idata.make[0]) {
+                m_ExifString += RawProcessor->imgdata.idata.make;
+                m_ExifString += " ";
+            }
+            if (RawProcessor->imgdata.idata.model[0]) m_ExifString += RawProcessor->imgdata.idata.model;
+            
+            if (!m_ExifString.empty()) m_ExifString += " | ";
+            
+            // ISO
+            if (RawProcessor->imgdata.other.iso_speed > 0) {
+                m_ExifString += "ISO " + std::to_string((int)RawProcessor->imgdata.other.iso_speed) + " | ";
+            }
+            
+            // Shutter Speed
+            if (RawProcessor->imgdata.other.shutter > 0) {
+                if (RawProcessor->imgdata.other.shutter < 1.0f) {
+                    m_ExifString += "1/" + std::to_string((int)(1.0f / RawProcessor->imgdata.other.shutter)) + "s | ";
+                } else {
+                    char buf[32];
+                    snprintf(buf, sizeof(buf), "%.1fs | ", RawProcessor->imgdata.other.shutter);
+                    m_ExifString += buf;
+                }
+            }
+            
+            // Aperture
+            if (RawProcessor->imgdata.other.aperture > 0) {
+                char buf[32];
+                snprintf(buf, sizeof(buf), "f/%.1f | ", RawProcessor->imgdata.other.aperture);
+                m_ExifString += buf;
+            }
+            
+            // Focal Length
+            if (RawProcessor->imgdata.other.focal_len > 0) {
+                char buf[32];
+                snprintf(buf, sizeof(buf), "%.0fmm", RawProcessor->imgdata.other.focal_len);
+                m_ExifString += buf;
+            }
+            
+            // Remove trailing separator if exists
+            if (m_ExifString.size() >= 3 && m_ExifString.substr(m_ExifString.size() - 3) == " | ") {
+                m_ExifString = m_ExifString.substr(0, m_ExifString.size() - 3);
+            }
+            
+            // Extract Date/Time for window title
+            m_ExifString2 = "";
+            
+            // Date/Time
+            if (RawProcessor->imgdata.other.timestamp > 0) {
+                time_t timestamp = RawProcessor->imgdata.other.timestamp;
+                struct tm* timeinfo = localtime(&timestamp);
+                char timeBuf[64];
+                strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S", timeinfo);
+                m_ExifString2 = timeBuf;
+            }
+
+            // Calculate Base Exposure (Auto Exposure)malize the image in the shader
             // We want (white - black) to map to 1.0 (65535)
             // Gain = 65535 / (white - black)
             // Exposure = log2(Gain)
@@ -163,6 +220,9 @@ void UmbriferaApp::LoadRawImage(const std::string& path) {
             glfwPostEmptyEvent();
             
             std::cout << "Image processing complete, ready for upload." << std::endl;
+            
+            // Load Sidecar if exists
+            LoadSidecar();
             
         } catch (const std::exception& e) {
             std::cerr << "Exception in loading thread: " << e.what() << std::endl;

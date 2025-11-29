@@ -6,6 +6,7 @@
 #include <jpeglib.h>
 #include <CoreGraphics/CoreGraphics.h>
 #include <ImageIO/ImageIO.h>
+#include <Cocoa/Cocoa.h>
 
 // Helper to load texture from asset
 static id<MTLTexture> LoadTextureFromAsset(id<MTLDevice> device, const std::string& filename) {
@@ -123,6 +124,13 @@ FileNavigator::~FileNavigator() {
 
 void FileNavigator::Init(id<MTLDevice> device) {
     m_Device = device;
+    
+    // Load Folder Icon (if exists)
+    m_FolderIconTexture = LoadTextureFromAsset(device, "folder_open_nf.png");
+    
+    // Load Up Arrow Icon
+    m_UpArrowTexture = LoadTextureFromAsset(device, "arrow_up.png");
+    
     m_LoaderThread = std::thread(&FileNavigator::ThumbnailLoaderThread, this);
     
     // Load Folder Icons
@@ -137,6 +145,10 @@ void FileNavigator::SetRootPath(const std::string& path) {
     }
 }
 
+void FileNavigator::SetLogo(id<MTLTexture> logo) {
+    m_LogoTexture = logo;
+}
+
 void FileNavigator::Render(std::function<void(std::string)> onFileSelected) {
     // Store callback for use in RenderDirectory
     m_OnFileSelected = onFileSelected;
@@ -144,12 +156,78 @@ void FileNavigator::Render(std::function<void(std::string)> onFileSelected) {
     ImGui::Begin("Navigator");
     
     // Top Bar: Path and Up Button
-    RenderPathBar();
+    float barHeight = ImGui::GetFrameHeight();
+    float iconSize = barHeight - ImGui::GetStyle().FramePadding.y * 2.0f; // Fit inside frame height
+    
+    // 1. Up Button
+    if (m_UpArrowTexture) {
+        if (ImGui::ImageButton("##UpBtn", (ImTextureID)m_UpArrowTexture, ImVec2(iconSize, iconSize))) {
+            if (m_RootPath.has_parent_path() && m_RootPath != m_RootPath.root_path()) {
+                m_RootPath = m_RootPath.parent_path();
+                m_PathBuffer = m_RootPath.string();
+            }
+        }
+    } else {
+        if (ImGui::Button("^", ImVec2(barHeight, barHeight))) {
+            if (m_RootPath.has_parent_path() && m_RootPath != m_RootPath.root_path()) {
+                m_RootPath = m_RootPath.parent_path();
+                m_PathBuffer = m_RootPath.string();
+            }
+        }
+    }
+    
+    ImGui::SameLine();
+    
+    // 2. Open Folder Button (Moved to left of path)
+    if (m_FolderIconTexture) {
+        if (ImGui::ImageButton("##OpenFolderBtn", (ImTextureID)m_FolderIconTexture, ImVec2(iconSize, iconSize))) {
+            // Open Native Folder Picker
+            NSOpenPanel* panel = [NSOpenPanel openPanel];
+            [panel setCanChooseFiles:NO];
+            [panel setCanChooseDirectories:YES];
+            [panel setAllowsMultipleSelection:NO];
+            
+            if ([panel runModal] == NSModalResponseOK) {
+                NSURL* url = [[panel URLs] objectAtIndex:0];
+                std::string path = [[url path] UTF8String];
+                SetRootPath(path);
+            }
+        }
+    } else {
+        if (ImGui::Button("Open", ImVec2(0, barHeight))) {
+             // Open Native Folder Picker
+            NSOpenPanel* panel = [NSOpenPanel openPanel];
+            [panel setCanChooseFiles:NO];
+            [panel setCanChooseDirectories:YES];
+            [panel setAllowsMultipleSelection:NO];
+            
+            if ([panel runModal] == NSModalResponseOK) {
+                NSURL* url = [[panel URLs] objectAtIndex:0];
+                std::string path = [[url path] UTF8String];
+                SetRootPath(path);
+            }
+        }
+    }
+    
+    ImGui::SameLine();
+    
+    // 3. Path Input
+    float availWidth = ImGui::GetContentRegionAvail().x;
+    
+    char buffer[1024];
+    strncpy(buffer, m_PathBuffer.c_str(), sizeof(buffer));
+    buffer[sizeof(buffer) - 1] = '\0';
+    
+    ImGui::PushItemWidth(availWidth);
+    if (ImGui::InputText("##Path", buffer, sizeof(buffer), ImGuiInputTextFlags_EnterReturnsTrue)) {
+        SetRootPath(buffer);
+    }
+    ImGui::PopItemWidth();
     
     ImGui::Separator();
     
-    // File Tree
-    ImGui::BeginChild("FileTree");
+    // File List
+    ImGui::BeginChild("FileList");
     
     // Render from Root
     try {
@@ -179,12 +257,17 @@ void FileNavigator::RenderPathBar() {
     ImGui::SameLine();
     
     // Path Input
+    // Reserve space for the Open Folder button on the right
+    float iconSize = ImGui::GetFrameHeight();
+    float buttonWidth = m_FolderIconTexture ? iconSize : 60.0f; // Icon or "Open" button
+    float availWidth = ImGui::GetContentRegionAvail().x - buttonWidth - ImGui::GetStyle().ItemSpacing.x;
+    
     // We use a temporary buffer to allow editing
     char buffer[1024];
     strncpy(buffer, m_PathBuffer.c_str(), sizeof(buffer));
     buffer[sizeof(buffer) - 1] = '\0';
     
-    ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x);
+    ImGui::PushItemWidth(availWidth);
     if (ImGui::InputText("##Path", buffer, sizeof(buffer), ImGuiInputTextFlags_EnterReturnsTrue)) {
         SetRootPath(buffer);
     }
@@ -209,9 +292,9 @@ void FileNavigator::RenderDirectory(const std::filesystem::path& path) {
         }
     }
     
-    // Sort alphabetically
+    // Sort alphabetically (case-insensitive)
     auto sortFunc = [](const auto& a, const auto& b) {
-        return a.path().filename().string() < b.path().filename().string();
+        return strcasecmp(a.path().filename().string().c_str(), b.path().filename().string().c_str()) < 0;
     };
     std::sort(dirs.begin(), dirs.end(), sortFunc);
     std::sort(files.begin(), files.end(), sortFunc);

@@ -7,6 +7,31 @@
 // This file handles the User Interface (UI) rendering using Dear ImGui.
 // It defines how the windows, buttons, and images look and behave.
 
+// --- UI Constants ---
+static const float UI_GAP_SMALL = 10.0f;
+static const float UI_GAP_LARGE = 20.0f;
+static const float UI_BUTTON_HEIGHT = 40.0f;
+static const float UI_MARGIN = 10.0f;
+
+// --- UI Helpers ---
+static void UI_Separator() {
+    ImGui::Dummy(ImVec2(0.0f, UI_GAP_SMALL));
+    ImGui::Separator();
+    ImGui::Dummy(ImVec2(0.0f, UI_GAP_SMALL));
+}
+
+static void UI_Header(const char* text) {
+    ImGui::Text("%s", text);
+}
+
+static void UI_GapSmall() {
+    ImGui::Dummy(ImVec2(0.0f, UI_GAP_SMALL));
+}
+
+static void UI_GapLarge() {
+    ImGui::Dummy(ImVec2(0.0f, UI_GAP_LARGE));
+}
+
 void UmbriferaApp::SetupLayout() {
     // This function runs once to set up the initial window layout.
     if (m_FirstLayout) {
@@ -291,7 +316,16 @@ void UmbriferaApp::RenderUI() {
         
         ImGui::SetCursorPosX(startX);
         if (ImGui::Button("Export", ImVec2(buttonWidth, 0))) {
-            std::string fullPath = std::string(filename) + "." + m_ExportFormat;
+            std::string fullPath;
+            
+            // Export to same directory as loaded image
+            if (!m_LoadedImagePath.empty()) {
+                size_t lastSlash = m_LoadedImagePath.find_last_of("/\\");
+                std::string dir = m_LoadedImagePath.substr(0, lastSlash + 1);
+                fullPath = dir + std::string(filename) + "." + m_ExportFormat;
+            } else {
+                fullPath = std::string(filename) + "." + m_ExportFormat;
+            }
             
             // Check if file exists
             std::ifstream checkFile(fullPath);
@@ -372,7 +406,7 @@ void UmbriferaApp::RenderUI() {
         ImGui::DockBuilderSetNodeSize(dockspace_id, ImGui::GetMainViewport()->Size);
         
         ImGuiID dock_id_left = ImGui::DockBuilderSplitNode(dockspace_id, ImGuiDir_Left, 0.20f, nullptr, &dockspace_id);
-        ImGuiID dock_id_right = ImGui::DockBuilderSplitNode(dockspace_id, ImGuiDir_Right, 0.20f, nullptr, &dockspace_id);
+        ImGuiID dock_id_right = ImGui::DockBuilderSplitNode(dockspace_id, ImGuiDir_Right, 0.25f, nullptr, &dockspace_id);
         
         ImGui::DockBuilderDockWindow("Navigator", dock_id_left);
         ImGui::DockBuilderDockWindow("Image Viewer", dockspace_id);
@@ -384,6 +418,9 @@ void UmbriferaApp::RenderUI() {
     
     // Draw File Navigator
     if (m_FileNavigator) {
+        if (m_LogoTexture) {
+            m_FileNavigator->SetLogo(m_LogoTexture);
+        }
         m_FileNavigator->Render([this](std::string path) {
             LoadRawImage(path);
         });
@@ -392,6 +429,18 @@ void UmbriferaApp::RenderUI() {
     // --- Center Window: Image Viewer ---
     // This is where we display the photo.
     ImGui::Begin("Image Viewer");
+    
+    // Update application window title with EXIF data
+    if (!m_ExifString.empty() || !m_ExifString2.empty()) {
+        std::string windowTitle = "Umbrifera";
+        if (!m_ExifString.empty()) {
+            windowTitle += " | " + m_ExifString;
+        }
+        if (!m_ExifString2.empty()) {
+            windowTitle += " | " + m_ExifString2;
+        }
+        glfwSetWindowTitle(m_Window, windowTitle.c_str());
+    }
     
     if (m_ProcessedTexture) {
         // Margins
@@ -543,6 +592,8 @@ void UmbriferaApp::RenderUI() {
     }
     ImGui::End();
     
+
+
     // --- Right Window: Develop ---
     ImGui::Begin("Develop");
     
@@ -552,7 +603,7 @@ void UmbriferaApp::RenderUI() {
     }
     
     // Top Margin
-    ImGui::Dummy(ImVec2(0.0f, 10.0f));
+    UI_GapSmall();
 
     // Histogram Display
     // Read back histogram data from GPU buffer
@@ -562,56 +613,25 @@ void UmbriferaApp::RenderUI() {
         // Ensure size
         if (m_Histogram.size() != 256) m_Histogram.resize(256, 0.0f);
         
-        // 1. Temporal Smoothing (Exponential Moving Average)
-        // This reduces flickering/oscillating.
-        float alpha = 0.15f; // Smoothing factor (lower = smoother over time)
-        for (int i = 0; i < 256; i++) {
-            float newVal = (float)ptr[i];
-            m_Histogram[i] = m_Histogram[i] * (1.0f - alpha) + newVal * alpha;
-        }
-        
-        // 2. Spatial Smoothing (Simple Blur)
-        // We create a temporary vector for display so we don't blur the state repeatedly.
-        // "Make each bar be influenced by the surrounding ones"
-        std::vector<float> smoothedHist(256);
-        
-        // 5-tap Gaussian-ish kernel [0.1, 0.2, 0.4, 0.2, 0.1]
-        for (int i = 0; i < 256; i++) {
-            float sum = 0.0f;
-            float weightSum = 0.0f;
-            
-            // Kernel radius 2
-            for (int offset = -2; offset <= 2; offset++) {
-                int idx = i + offset;
-                if (idx >= 0 && idx < 256) {
-                    float w = 0.0f;
-                    if (abs(offset) == 0) w = 0.4f;
-                    else if (abs(offset) == 1) w = 0.2f;
-                    else w = 0.1f;
-                    
-                    sum += m_Histogram[idx] * w;
-                    weightSum += w;
-                }
-            }
-            smoothedHist[i] = sum / weightSum;
-        }
-        
-        // 3. Normalization
+        // 1. Read and Linear Scaling
         float maxVal = 0.0f;
-        // Find max value to normalize the graph
-        // We ignore the absolute extremes (0 and 255) for scaling calculation
-        // to prevent clipped pixels from squashing the rest of the histogram.
+        
+        // Find max value in the meaningful range (1-254) to avoid clipping spikes dominating
         for (int i = 1; i < 255; i++) {
-            if (smoothedHist[i] > maxVal) maxVal = smoothedHist[i];
+            float count = (float)ptr[i];
+            m_Histogram[i] = count;
+            if (count > maxVal) maxVal = count;
         }
+        
+        // Handle edges (0 and 255) - just copy them, they will be clamped visually
+        m_Histogram[0] = (float)ptr[0];
+        m_Histogram[255] = (float)ptr[255];
+        
         if (maxVal <= 0.0f) maxVal = 1.0f;
         
-        // Normalize
-        for (float& v : smoothedHist) v /= maxVal;
-        
-        // Plot (Custom Solid Rendering)
+        // 2. Draw Graph
         ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
-        ImVec2 canvas_size = ImVec2(ImGui::GetContentRegionAvail().x, 80);
+        ImVec2 canvas_size = ImVec2(ImGui::GetContentRegionAvail().x, 100); // Taller for better detail
         
         ImDrawList* draw_list = ImGui::GetWindowDrawList();
         
@@ -619,61 +639,341 @@ void UmbriferaApp::RenderUI() {
         draw_list->AddRectFilled(canvas_pos, ImVec2(canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y), ImGui::GetColorU32(ImGuiCol_FrameBg));
         
         // Draw Filled Curve
-        if (smoothedHist.size() > 1) {
-            std::vector<ImVec2> points;
-            points.reserve(smoothedHist.size() + 2);
+        std::vector<ImVec2> points;
+        points.reserve(258);
+        
+        // Start point (bottom left)
+        points.push_back(ImVec2(canvas_pos.x, canvas_pos.y + canvas_size.y));
+        
+        for (int i = 0; i < 256; ++i) {
+            float x = canvas_pos.x + (float)i / 255.0f * canvas_size.x;
             
-            // Start point (bottom left)
-            points.push_back(ImVec2(canvas_pos.x, canvas_pos.y + canvas_size.y));
+            // Linear scaling relative to maxVal
+            // If a value (like 0 or 255) is > maxVal, it will go above the top (clamped)
+            float normalizedHeight = m_Histogram[i] / maxVal;
+            if (normalizedHeight > 1.0f) normalizedHeight = 1.0f;
             
-            for (int i = 0; i < smoothedHist.size(); ++i) {
-                float x = canvas_pos.x + (float)i / (float)(smoothedHist.size() - 1) * canvas_size.x;
-                float y = canvas_pos.y + canvas_size.y - smoothedHist[i] * canvas_size.y;
-                
-                // Clamp to top of canvas to prevent drawing outside
-                if (y < canvas_pos.y) y = canvas_pos.y;
-                
-                points.push_back(ImVec2(x, y));
-            }
+            float y = canvas_pos.y + canvas_size.y - normalizedHeight * canvas_size.y;
             
-            // End point (bottom right)
-            points.push_back(ImVec2(canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y));
-            
-            draw_list->AddConvexPolyFilled(points.data(), (int)points.size(), ImGui::GetColorU32(ImGuiCol_PlotHistogram));
+            points.push_back(ImVec2(x, y));
+        }
+        
+        // End point (bottom right)
+        points.push_back(ImVec2(canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y));
+        
+        // Draw Fill
+        draw_list->AddConvexPolyFilled(points.data(), (int)points.size(), IM_COL32(200, 200, 200, 100)); // Light Grey, semi-transparent
+        
+        // Draw Line (Spline-like)
+        // We reuse the points but skip the first and last (bottom corners)
+        if (points.size() > 2) {
+            draw_list->AddPolyline(points.data() + 1, (int)points.size() - 2, IM_COL32(255, 255, 255, 255), 0, 1.5f);
         }
         
         ImGui::Dummy(canvas_size);
     }
     
-    ImGui::Dummy(ImVec2(0.0f, 10.0f));
-    ImGui::Separator();
-    ImGui::Dummy(ImVec2(0.0f, 10.0f));
+    UI_Separator();
+
+    bool changed = false;
+
+    // --- Presets ---
+    UI_Header("Presets");
+    // Removed border (false)
+    ImGui::BeginChild("Presets", ImVec2(0, 80), false, ImGuiWindowFlags_HorizontalScrollbar);
+    for (size_t i = 0; i < m_Presets.size(); i++) {
+        if (i > 0) ImGui::SameLine();
+        
+        ImGui::PushID((int)i);
+        if (ImGui::Button(m_Presets[i].name.c_str(), ImVec2(100, 60))) {
+            ApplyPreset(m_Presets[i]);
+            SaveSidecar(); // Save immediately when preset applied
+            changed = true; // Trigger image update
+        }
+        
+        // Context Menu for Deletion (except Default)
+        if (i > 0 && ImGui::BeginPopupContextItem()) {
+            if (ImGui::MenuItem("Delete")) {
+                m_Presets.erase(m_Presets.begin() + i);
+                SavePresets();
+                i--; // Adjust index
+            }
+            ImGui::EndPopup();
+        }
+        ImGui::PopID();
+    }
+    ImGui::EndChild();
+    
+    UI_Separator();
     
     // Removed BeginChild to remove the black rectangle border
     // ImGui::BeginChild("LightControls", ImVec2(0, 300), true);
     
-    bool changed = false;
-    changed |= SliderWithReset("Exposure", &m_Uniforms.exposure, -5.0f, 5.0f, 0.0f);
-    changed |= SliderWithReset("Contrast", &m_Uniforms.contrast, 0.5f, 1.5f, 1.0f);
+    // White Balance
+    UI_Header("White Balance");
+    if (SliderWithReset("Temperature", &m_Uniforms.temperature, -1.0f, 1.0f, 0.0f)) changed = true;
+    if (SliderWithReset("Tint", &m_Uniforms.tint, -1.0f, 1.0f, 0.0f)) changed = true;
     
-    ImGui::Dummy(ImVec2(0.0f, 20.0f)); // Spacing
+    UI_Separator();
     
-    changed |= SliderWithReset("Highlights", &m_Uniforms.highlights, -1.0f, 1.0f, 0.0f);
-    changed |= SliderWithReset("Shadows", &m_Uniforms.shadows, -1.0f, 1.0f, 0.0f);
-    changed |= SliderWithReset("Whites", &m_Uniforms.whites, -1.0f, 1.0f, 0.0f);
-    changed |= SliderWithReset("Blacks", &m_Uniforms.blacks, -1.0f, 1.0f, 0.0f);
+    // Light & Color
+    UI_Header("Light & Color");
+    if (SliderWithReset("Exposure", &m_Uniforms.exposure, -5.0f, 5.0f, 0.0f)) changed = true;
+    if (SliderWithReset("Contrast", &m_Uniforms.contrast, 0.5f, 1.5f, 1.0f)) changed = true;
     
-    ImGui::Dummy(ImVec2(0.0f, 20.0f)); // Spacing
+    UI_GapSmall();
     
-    changed |= SliderWithReset("Saturation", &m_Uniforms.saturation, 0.0f, 2.0f, 1.0f);
+    if (SliderWithReset("Highlights", &m_Uniforms.highlights, -1.0f, 1.0f, 0.0f)) changed = true;
+    if (SliderWithReset("Shadows", &m_Uniforms.shadows, -1.0f, 1.0f, 0.0f)) changed = true;
+    if (SliderWithReset("Whites", &m_Uniforms.whites, -1.0f, 1.0f, 0.0f)) changed = true;
+    if (SliderWithReset("Blacks", &m_Uniforms.blacks, -1.0f, 1.0f, 0.0f)) changed = true;
     
-    ImGui::Dummy(ImVec2(0.0f, 20.0f)); // Spacing
+    UI_GapSmall();
+    
+    if (SliderWithReset("Vibrance", &m_Uniforms.vibrance, -1.0f, 1.0f, 0.0f)) changed = true;
+    if (SliderWithReset("Saturation", &m_Uniforms.saturation, 0.0f, 2.0f, 1.0f)) changed = true;
+    
+    // Custom Hue Offset Slider with non-linear sensitivity
+    {
+        float val = m_Uniforms.hue_offset;
+        float sliderVal = cbrtf(m_Uniforms.hue_offset * 2.0f); 
+        if (sliderVal > 1.0f) sliderVal = 1.0f;
+        if (sliderVal < -1.0f) sliderVal = -1.0f;
+        
+        // Use SliderWithReset logic manually to handle non-linear mapping
+        ImGui::PushID("HueOffset");
+        if (ImGui::SliderFloat("##HueOffset", &sliderVal, -1.0f, 1.0f)) {
+            m_Uniforms.hue_offset = sliderVal * sliderVal * sliderVal * 0.5f;
+            changed = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Hue Offset")) {
+            m_Uniforms.hue_offset = 0.0f;
+            changed = true;
+        }
+        ImGui::PopID();
+    }
+    
+    UI_Separator();
+    
+    // HSL Adjustments
+    bool hsl_active = m_Uniforms.hsl_enabled != 0;
+    if (ImGui::Checkbox("Enable HSL", &hsl_active)) {
+        m_Uniforms.hsl_enabled = hsl_active ? 1 : 0;
+        changed = true;
+    }
+    
+    if (hsl_active) {
+        UI_GapSmall();
+        
+        // Colors for headers (approximate)
+        ImVec4 headerColors[15] = {
+            ImVec4(1.0f, 0.0f, 0.0f, 1.0f), // Red
+            ImVec4(1.0f, 0.25f, 0.0f, 1.0f),
+            ImVec4(1.0f, 0.5f, 0.0f, 1.0f),
+            ImVec4(1.0f, 0.75f, 0.0f, 1.0f),
+            ImVec4(1.0f, 1.0f, 0.0f, 1.0f), // Yellow
+            ImVec4(0.5f, 1.0f, 0.0f, 1.0f),
+            ImVec4(0.0f, 1.0f, 0.0f, 1.0f), // Green
+            ImVec4(0.0f, 1.0f, 0.5f, 1.0f),
+            ImVec4(0.0f, 1.0f, 1.0f, 1.0f), // Cyan
+            ImVec4(0.0f, 0.5f, 1.0f, 1.0f),
+            ImVec4(0.0f, 0.0f, 1.0f, 1.0f), // Blue
+            ImVec4(0.5f, 0.0f, 1.0f, 1.0f),
+            ImVec4(0.75f, 0.0f, 1.0f, 1.0f),
+            ImVec4(1.0f, 0.0f, 1.0f, 1.0f), // Magenta
+            ImVec4(1.0f, 0.0f, 0.5f, 1.0f)
+        };
+        
+        for (int i = 0; i < 15; i++) {
+            ImGui::PushID(i);
+            
+            // Tint the reset buttons
+            ImVec4 baseColor = headerColors[i];
+            // Make it subtle for the button
+            ImVec4 buttonColor = ImVec4(baseColor.x, baseColor.y, baseColor.z, 0.3f);
+            ImVec4 buttonHover = ImVec4(baseColor.x, baseColor.y, baseColor.z, 0.5f);
+            ImVec4 buttonActive = ImVec4(baseColor.x, baseColor.y, baseColor.z, 0.7f);
+            
+            ImGui::PushStyleColor(ImGuiCol_Button, buttonColor);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, buttonHover);
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, buttonActive);
+            
+            // Hue (Non-linear)
+            float hVal = m_Uniforms.hsl_adjustments[i].x;
+            float hSlider = cbrtf(hVal * 10.0f); 
+            
+            if (ImGui::SliderFloat("##Hue", &hSlider, -1.0f, 1.0f, "%.3f")) {
+                m_Uniforms.hsl_adjustments[i].x = hSlider * hSlider * hSlider * 0.1f;
+                changed = true;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Hue")) {
+                m_Uniforms.hsl_adjustments[i].x = 0.0f;
+                changed = true;
+            }
+            
+            // Saturation
+            float sVal = m_Uniforms.hsl_adjustments[i].y;
+            if (ImGui::SliderFloat("##Sat", &sVal, -1.0f, 1.0f, "%.3f")) {
+                m_Uniforms.hsl_adjustments[i].y = sVal;
+                changed = true;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Saturation")) {
+                m_Uniforms.hsl_adjustments[i].y = 0.0f;
+                changed = true;
+            }
+            
+            // Luminance
+            float lVal = m_Uniforms.hsl_adjustments[i].z;
+            if (ImGui::SliderFloat("##Lum", &lVal, -1.0f, 1.0f, "%.3f")) {
+                m_Uniforms.hsl_adjustments[i].z = lVal;
+                changed = true;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Luminance")) {
+                m_Uniforms.hsl_adjustments[i].z = 0.0f;
+                changed = true;
+            }
+            
+            ImGui::PopStyleColor(3); // Pop button colors
+            ImGui::PopID();
+            
+            // Gap after every color
+            UI_GapSmall();
+        }
+    }
+    
+    UI_Separator();
+    
+    // Effects
+    // ImGui::Text("Effects"); // Removed as requested
+    
+    // Vignette
+    UI_Header("Vignette");
+    ImGui::PushID("VignetteControls");
+    if (SliderWithReset("Strength", &m_Uniforms.vignette_strength, 0.0f, 1.0f, 0.0f)) changed = true;
+    if (SliderWithReset("Size", &m_Uniforms.vignette_size, 0.0f, 1.0f, 0.5f)) changed = true;
+    if (SliderWithReset("Feather", &m_Uniforms.vignette_feather, 0.0f, 1.0f, 0.5f)) changed = true;
+    ImGui::PopID();
+    
+    UI_GapSmall();
+    
+    // Film Grain
+    UI_Header("Film Grain");
+    ImGui::PushID("GrainControls");
+    if (SliderWithReset("Amount", &m_Uniforms.grain_amount, 0.0f, 1.0f, 0.0f)) changed = true;
+    if (SliderWithReset("Size", &m_Uniforms.grain_size, 0.5f, 5.0f, 1.6f)) changed = true;
+    ImGui::PopID();
+    
+    // Save Preset Dialog
+    if (m_ShowSavePresetDialog) {
+        ImGui::OpenPopup("Save Preset");
+        ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    }
+    
+    if (ImGui::BeginPopupModal("Save Preset", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("Enter preset name:");
+        
+        // Auto-focus input
+        if (m_ShowSavePresetDialog) {
+            ImGui::SetKeyboardFocusHere();
+            m_ShowSavePresetDialog = false; // Only focus once
+        }
+        
+        bool enterPressed = ImGui::InputText("##PresetName", m_NewPresetName, IM_ARRAYSIZE(m_NewPresetName), ImGuiInputTextFlags_EnterReturnsTrue);
+        
+        UI_Separator();
+        
+        if (ImGui::Button("Save", ImVec2(120, 0)) || enterPressed) {
+            if (strlen(m_NewPresetName) > 0) {
+                // Check for duplicate
+                bool exists = false;
+                for (const auto& p : m_Presets) {
+                    if (p.name == m_NewPresetName) {
+                        exists = true;
+                        break;
+                    }
+                }
+                
+                if (exists) {
+                    // Close current dialog and open overwrite confirmation
+                    ImGui::CloseCurrentPopup();
+                    ImGui::OpenPopup("Confirm Preset Overwrite");
+                    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+                } else {
+                    Preset newPreset;
+                    newPreset.name = m_NewPresetName;
+                    newPreset.data = m_Uniforms;
+                    m_Presets.push_back(newPreset);
+                    SavePresets();
+                    ImGui::CloseCurrentPopup();
+                }
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+            ImGui::CloseCurrentPopup();
+        }
+        
+        ImGui::EndPopup();
+    }
+    
+    // Overwrite Confirmation Dialog (separate, not nested)
+    if (ImGui::BeginPopupModal("Confirm Preset Overwrite", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("Preset already exists:");
+        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "%s", m_NewPresetName);
+        ImGui::Spacing();
+        ImGui::Text("Do you want to overwrite it?");
+        
+        UI_Separator();
+        
+        if (ImGui::Button("Overwrite", ImVec2(120, 0))) {
+            // Find and replace
+            for (auto& p : m_Presets) {
+                if (p.name == m_NewPresetName) {
+                    p.data = m_Uniforms;
+                    break;
+                }
+            }
+            SavePresets();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+            ImGui::CloseCurrentPopup();
+        }
+        
+        ImGui::EndPopup();
+    }
+    
+    // --- Sidecar Saving ---
+    // Check if any slider was released or toggle changed
+    if (changed || ImGui::IsItemDeactivatedAfterEdit()) {
+        SaveSidecar();
+    }
+    
+    ImGui::Dummy(ImVec2(0.0f, 20.0f));
     ImGui::Separator();
-    ImGui::Dummy(ImVec2(0.0f, 20.0f)); // Spacing
+    ImGui::Dummy(ImVec2(0.0f, 20.0f));
     
     // Tone Mapping Selector
     const char* items[] = { "Standard (Gamma 2.2)", "Cinematic (ACES)", "Soft (Reinhard)" };
     changed |= ImGui::Combo("Tone Curve", &m_Uniforms.tonemap_mode, items, IM_ARRAYSIZE(items));
+    
+    ImGui::Dummy(ImVec2(0.0f, 20.0f));
+    ImGui::Separator();
+    ImGui::Dummy(ImVec2(0.0f, 20.0f));
+
+    // Save Preset Button (Moved to bottom)
+    float availWidth = ImGui::GetContentRegionAvail().x;
+    float buttonWidth = 150.0f;
+    ImGui::SetCursorPosX((availWidth - buttonWidth) * 0.5f + ImGui::GetCursorPosX());
+    if (ImGui::Button("Save Preset", ImVec2(buttonWidth, 40))) {
+        m_ShowSavePresetDialog = true;
+        m_NewPresetName[0] = '\0'; // Reset name
+    }
     
     if (changed) {
         m_ImageDirty = true; // Trigger re-processing

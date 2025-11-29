@@ -23,6 +23,9 @@ public:
     
     // Set the root directory explicitly
     void SetRootPath(const std::string& path);
+    
+    // Set Logo
+    void SetLogo(id<MTLTexture> logo);
 
 private:
     void RenderDirectory(const std::filesystem::path& path);
@@ -55,6 +58,9 @@ private:
     // Folder Icons
     id<MTLTexture> m_FolderOpenTexture = nil;
     id<MTLTexture> m_FolderClosedTexture = nil;
+    id<MTLTexture> m_FolderIconTexture = nil;
+    id<MTLTexture> m_UpArrowTexture = nil;
+    id<MTLTexture> m_LogoTexture = nil;
     
     // Async Loading
     std::vector<std::filesystem::path> m_LoadQueue;
