@@ -92,6 +92,85 @@ static std::vector<uint8_t> DecodeJpegToRgba(const uint8_t* data, size_t size, i
     return rgba;
 }
 
+// Helper to rotate RGBA image based on EXIF orientation
+// Orientation values: 1=normal, 3=180°, 6=90° CW, 8=90° CCW
+static std::vector<uint8_t> RotateRgbaByOrientation(const std::vector<uint8_t>& src, int srcWidth, int srcHeight, int orientation, int* outWidth, int* outHeight) {
+    if (orientation == 1 || orientation == 0) {
+        // No rotation needed
+        *outWidth = srcWidth;
+        *outHeight = srcHeight;
+        return src;
+    }
+    
+    std::vector<uint8_t> dst;
+    
+    if (orientation == 3) {
+        // 180° rotation
+        *outWidth = srcWidth;
+        *outHeight = srcHeight;
+        dst.resize(srcWidth * srcHeight * 4);
+        
+        for (int y = 0; y < srcHeight; y++) {
+            for (int x = 0; x < srcWidth; x++) {
+                int srcIdx = (y * srcWidth + x) * 4;
+                int dstX = srcWidth - 1 - x;
+                int dstY = srcHeight - 1 - y;
+                int dstIdx = (dstY * srcWidth + dstX) * 4;
+                
+                dst[dstIdx + 0] = src[srcIdx + 0];
+                dst[dstIdx + 1] = src[srcIdx + 1];
+                dst[dstIdx + 2] = src[srcIdx + 2];
+                dst[dstIdx + 3] = src[srcIdx + 3];
+            }
+        }
+    } else if (orientation == 6) {
+        // 90° clockwise
+        *outWidth = srcHeight;
+        *outHeight = srcWidth;
+        dst.resize(srcWidth * srcHeight * 4);
+        
+        for (int y = 0; y < srcHeight; y++) {
+            for (int x = 0; x < srcWidth; x++) {
+                int srcIdx = (y * srcWidth + x) * 4;
+                int dstX = srcHeight - 1 - y;
+                int dstY = x;
+                int dstIdx = (dstY * (*outWidth) + dstX) * 4;
+                
+                dst[dstIdx + 0] = src[srcIdx + 0];
+                dst[dstIdx + 1] = src[srcIdx + 1];
+                dst[dstIdx + 2] = src[srcIdx + 2];
+                dst[dstIdx + 3] = src[srcIdx + 3];
+            }
+        }
+    } else if (orientation == 8) {
+        // 90° counter-clockwise
+        *outWidth = srcHeight;
+        *outHeight = srcWidth;
+        dst.resize(srcWidth * srcHeight * 4);
+        
+        for (int y = 0; y < srcHeight; y++) {
+            for (int x = 0; x < srcWidth; x++) {
+                int srcIdx = (y * srcWidth + x) * 4;
+                int dstX = y;
+                int dstY = srcWidth - 1 - x;
+                int dstIdx = (dstY * (*outWidth) + dstX) * 4;
+                
+                dst[dstIdx + 0] = src[srcIdx + 0];
+                dst[dstIdx + 1] = src[srcIdx + 1];
+                dst[dstIdx + 2] = src[srcIdx + 2];
+                dst[dstIdx + 3] = src[srcIdx + 3];
+            }
+        }
+    } else {
+        // Other orientations (mirrored) - just return original for now
+        *outWidth = srcWidth;
+        *outHeight = srcHeight;
+        return src;
+    }
+    
+    return dst;
+}
+
 // Helper to check if file is a RAW image (ONLY RAW)
 static bool IsRawImageFile(const std::filesystem::path& path) {
     static const std::set<std::string> extensions = {
@@ -364,22 +443,35 @@ void FileNavigator::RenderDirectory(const std::filesystem::path& path) {
         
         ImVec2 startPos = ImGui::GetCursorScreenPos();
         float availWidth = ImGui::GetContentRegionAvail().x;
-        float rowHeight = 60.0f; // Fixed row height
-        float thumbSize = 50.0f; // Thumbnail size
-        float margin = (rowHeight - thumbSize) * 0.5f; // Center vertically
+        
+        // Constant thumbnail width, variable height based on aspect ratio
+        float thumbWidth = 60.0f;
+        float thumbHeight = thumbWidth; // Default to square if no thumbnail yet
+        float margin = 5.0f;
+        
+        // Get thumbnail and calculate actual display dimensions
+        id<MTLTexture> thumb = GetThumbnail(entry.path());
+        if (thumb) {
+            float texWidth = (float)[thumb width];
+            float texHeight = (float)[thumb height];
+            float aspect = texHeight / texWidth;
+            thumbHeight = thumbWidth * aspect;
+        }
+        
+        // Row height adapts to thumbnail height
+        float rowHeight = thumbHeight + margin * 2;
+        float minRowHeight = 40.0f; // Minimum for text visibility
+        if (rowHeight < minRowHeight) rowHeight = minRowHeight;
         
         // 1. Draw Content (Thumbnail + Text)
-        id<MTLTexture> thumb = GetThumbnail(entry.path());
-        float thumbWidth = thumbSize;
-        
-        // Draw Thumbnail with margin
-        ImGui::SetCursorScreenPos(ImVec2(startPos.x + margin, startPos.y + margin));
+        // Draw Thumbnail with margin, vertically centered in row
+        float thumbY = startPos.y + (rowHeight - thumbHeight) * 0.5f;
+        ImGui::SetCursorScreenPos(ImVec2(startPos.x + margin, thumbY));
         if (thumb) {
-            float aspect = (float)[thumb width] / (float)[thumb height];
-            thumbWidth = thumbSize * aspect;
-            ImGui::Image((ImTextureID)thumb, ImVec2(thumbWidth, thumbSize));
+            ImGui::Image((ImTextureID)thumb, ImVec2(thumbWidth, thumbHeight));
         } else {
-            ImGui::Button("?", ImVec2(thumbWidth, thumbSize));
+            // Placeholder while loading
+            ImGui::Button("...", ImVec2(thumbWidth, thumbHeight));
         }
         
         // Draw text (vertically centered)
@@ -388,7 +480,6 @@ void FileNavigator::RenderDirectory(const std::filesystem::path& path) {
         ImGui::Text("%s", name.c_str());
         
         // 2. Draw Invisible Button over everything for click handling
-        // Reset cursor to start to draw button over content
         ImGui::SetCursorScreenPos(startPos);
         bool clicked = ImGui::InvisibleButton(("##file" + pathStr).c_str(), ImVec2(availWidth, rowHeight));
         
@@ -442,30 +533,38 @@ void FileNavigator::ThumbnailLoaderThread() {
             m_LoadQueue.erase(m_LoadQueue.begin());
         }
         
-        // Load Thumbnail
-        // Use heap allocation to avoid stack overflow (LibRaw is large)
+        // Load Thumbnail with orientation support
         auto RawProcessor = std::make_unique<LibRaw>();
         id<MTLTexture> texture = nil;
         
-        // Try to open
         if (RawProcessor->open_file(path.c_str()) == LIBRAW_SUCCESS) {
-            // Try to unpack thumbnail
+            // Get EXIF orientation (flip is a bitmask, we need to extract orientation)
+            int orientation = RawProcessor->imgdata.sizes.flip;
+            // LibRaw flip values: 0=none, 3=180°, 5=90°CCW, 6=90°CW
+            // Map to standard EXIF: 1=normal, 3=180°, 6=90°CW, 8=90°CCW
+            int exifOrientation = 1;
+            if (orientation == 3) exifOrientation = 3;      // 180°
+            else if (orientation == 5) exifOrientation = 8; // 90° CCW
+            else if (orientation == 6) exifOrientation = 6; // 90° CW
+            
             if (RawProcessor->unpack_thumb() == LIBRAW_SUCCESS) {
-                // We have a thumbnail in memory
                 libraw_processed_image_t* thumb = RawProcessor->dcraw_make_mem_thumb();
                 if (thumb) {
                     if (thumb->type == LIBRAW_IMAGE_JPEG) {
-                        // Decode JPEG
                         int width, height;
                         std::vector<uint8_t> rgba = DecodeJpegToRgba((const uint8_t*)thumb->data, thumb->data_size, &width, &height);
                         
                         if (!rgba.empty() && m_Device) {
+                            // Apply rotation based on orientation
+                            int finalWidth, finalHeight;
+                            std::vector<uint8_t> rotated = RotateRgbaByOrientation(rgba, width, height, exifOrientation, &finalWidth, &finalHeight);
+                            
                             @autoreleasepool {
-                                MTLTextureDescriptor* desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:width height:height mipmapped:NO];
+                                MTLTextureDescriptor* desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:finalWidth height:finalHeight mipmapped:NO];
                                 texture = [m_Device newTextureWithDescriptor:desc];
                                 
-                                MTLRegion region = MTLRegionMake2D(0, 0, width, height);
-                                [texture replaceRegion:region mipmapLevel:0 withBytes:rgba.data() bytesPerRow:width * 4];
+                                MTLRegion region = MTLRegionMake2D(0, 0, finalWidth, finalHeight);
+                                [texture replaceRegion:region mipmapLevel:0 withBytes:rotated.data() bytesPerRow:finalWidth * 4];
                             }
                         }
                     }

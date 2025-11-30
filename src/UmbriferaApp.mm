@@ -608,7 +608,9 @@ void UmbriferaApp::CalculateAutoSettings() {
     }
 }
 - (void)resizeImage:(id)sender {
-    // Does nothing for now
+    if (_app) {
+        _app->OpenResizeDialog();
+    }
 }
 @end
 

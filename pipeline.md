@@ -98,7 +98,19 @@ Calculates the luminance distribution for the UI.
 *   **Binning**: 256 bins.
 *   **Method**: Atomic addition in a compute shader.
 
-## 5. Auto Adjust Logic
+## 5. Resize (GPU - Compute Shader)
+
+High-quality image resizing using box filter (area averaging).
+
+*   **Algorithm**: Box filter with sub-pixel precision - the mathematically correct method for downsampling.
+*   **Principle**: Each output pixel is computed as the weighted average of all source pixels that contribute to its area.
+*   **Weight Calculation**: The weight of each source pixel is proportional to its overlap area with the destination pixel's footprint.
+*   **Implementation**: Metal compute shader (`box_downscale`) calculates exact overlap for each source/destination pixel pair.
+*   **Color Space**: Works in linear space (RGBA16Unorm) for physically correct color blending without artifacts.
+*   **Constraint**: Only downscaling is supported (output dimensions ≤ input dimensions).
+*   **Aspect Ratio**: Locked - changing width automatically adjusts height and vice versa.
+
+## 6. Auto Adjust Logic
 
 The "Auto" button calculates optimal starting values based on the **Raw Histogram** (computed from the linear raw data immediately after loading).
 

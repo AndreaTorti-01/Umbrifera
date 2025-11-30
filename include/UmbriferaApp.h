@@ -67,9 +67,11 @@ public:
     
     void OpenExportDialog(const std::string& format);
     void LoadRawImage(const std::string& path);
+    void OpenResizeDialog();
 
 public:
     bool m_ResetLayoutRequested = false; // Public so menu handler can access it
+    bool m_ShowResizeDialog = false;     // Public so menu handler can access it
     
 private:
     void InitWindow();
@@ -157,6 +159,7 @@ private:
     id<MTLCommandQueue> m_CommandQueue = nil;
     id<MTLRenderPipelineState> m_RenderPSO = nil;
     id<MTLComputePipelineState> m_HistogramPSO = nil;
+    id<MTLComputePipelineState> m_Lanczos3PSO = nil;  // Lanczos3 downscale shader
     id<MTLTexture> m_RawTexture = nil;       // Source (Immutable)
     id<MTLTexture> m_ProcessedTexture = nil; // Destination (Render Target)
     
@@ -184,6 +187,10 @@ private:
     // EXIF Data
     std::string m_ExifString;  // Top-left: Camera, ISO, Shutter, Aperture, Focal Length
     std::string m_ExifString2; // Bottom-right: GPS, Date/Time
+    
+    // Resize Dialog State
+    int m_ResizeTargetWidth = 0;
+    int m_ResizeTargetHeight = 0;
 
     id<MTLTexture> m_LogoTexture = nil;      // Logo
     id<MTLBuffer> m_HistogramBuffer = nil;

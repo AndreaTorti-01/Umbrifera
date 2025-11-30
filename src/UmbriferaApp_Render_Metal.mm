@@ -66,6 +66,7 @@ void UmbriferaApp::InitMetal() {
     id<MTLFunction> vertexFunction = [library newFunctionWithName:@"vertex_main"];
     id<MTLFunction> fragmentFunction = [library newFunctionWithName:@"fragment_main"];
     id<MTLFunction> histogramFunction = [library newFunctionWithName:@"histogram_main"];
+    id<MTLFunction> boxDownscaleFunction = [library newFunctionWithName:@"box_downscale"];
 
     // 5. Create Render Pipeline State (for drawing the image)
     MTLRenderPipelineDescriptor* pipelineDescriptor = [[MTLRenderPipelineDescriptor alloc] init];
@@ -84,6 +85,13 @@ void UmbriferaApp::InitMetal() {
     m_HistogramPSO = [m_Device newComputePipelineStateWithFunction:histogramFunction error:&error];
     if (!m_HistogramPSO) {
         NSLog(@"Error creating compute pipeline state: %@", error);
+        return;
+    }
+    
+    // 7. Create Compute Pipeline State (for box filter downscaling)
+    m_Lanczos3PSO = [m_Device newComputePipelineStateWithFunction:boxDownscaleFunction error:&error];
+    if (!m_Lanczos3PSO) {
+        NSLog(@"Error creating box downscale pipeline state: %@", error);
         return;
     }
 }

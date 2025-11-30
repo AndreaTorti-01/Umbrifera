@@ -22,15 +22,49 @@ Umbrifera is a professional RAW image processing application built with Metal (m
 
 ## UI Design Philosophy
 
-### Standardized Components
-The UI uses standardized constants and helpers defined in `UmbriferaApp_UI.mm`:
-- `UI_GAP_SMALL` (10px), `UI_GAP_LARGE` (20px)
-- `UI_BUTTON_HEIGHT` (40px), `UI_MARGIN` (10px)
-- `UI_Separator()`: Gap + separator + gap pattern
-- `UI_Header(text)`: Section headers
-- `UI_GapSmall()`, `UI_GapLarge()`: Consistent spacing
+### Centralized UI Configuration
+> [!IMPORTANT]
+> All UI constants MUST be defined in `include/UIConfig.h`. Never use magic numbers for spacing, sizes, or visual parameters in component code.
 
-**Always use these helpers instead of magic numbers.**
+**UIConfig.h** contains:
+- `UIConfig::GAP_SMALL`, `UIConfig::GAP_LARGE` - Vertical spacing
+- `UIConfig::MARGIN` - General margins
+- `UIConfig::BUTTON_HEIGHT`, `UIConfig::BUTTON_WIDTH_STANDARD` - Button dimensions
+- `UIConfig::DIALOG_PADDING`, `UIConfig::DIALOG_INPUT_WIDTH` - Dialog styling
+- `UIConfig::IMAGE_MARGIN` - Margin around image in viewer
+- `UIConfig::HISTOGRAM_HEIGHT` - Histogram display height
+- `UIConfig::PRESET_BUTTON_WIDTH/HEIGHT`, `UIConfig::PRESETS_AREA_HEIGHT` - Preset UI
+
+When you need a new visual constant, **add it to UIConfig.h** rather than embedding it in component code.
+
+### Reusable UI Helpers
+> [!IMPORTANT]
+> All repeating UI patterns MUST be encapsulated in `include/UIHelpers.h`. Never duplicate layout logic.
+
+**UIHelpers.h** provides:
+- `UIHelpers::GapSmall()`, `UIHelpers::GapLarge()` - Consistent vertical gaps
+- `UIHelpers::Separator()` - Gap + separator + gap pattern
+- `UIHelpers::Header(text)` - Section headers
+- `UIHelpers::CenterNextWindow()` - Center dialog on main viewport
+- `UIHelpers::ModalFlags()` - Standard modal window flags
+- `UIHelpers::BeginCenteredModal()` / `EndCenteredModal()` - Modal dialog wrapper
+- `UIHelpers::CenteredButtonPair()` - Two centered buttons (OK/Cancel pattern)
+- `UIHelpers::SliderWithReset()` - Slider with clickable reset label
+
+When you create a new UI pattern that appears more than once, **add it to UIHelpers.h**.
+
+### Standardized Components (Legacy Aliases)
+For backward compatibility, `UmbriferaApp_UI.mm` provides local aliases:
+- `UI_GAP_SMALL` → `UIConfig::GAP_SMALL`
+- `UI_GAP_LARGE` → `UIConfig::GAP_LARGE`
+- `UI_BUTTON_HEIGHT` → `UIConfig::BUTTON_HEIGHT`
+- `UI_MARGIN` → `UIConfig::MARGIN`
+- `UI_Separator()` → `UIHelpers::Separator()`
+- `UI_Header(text)` → `UIHelpers::Header()`
+- `UI_GapSmall()` → `UIHelpers::GapSmall()`
+- `UI_GapLarge()` → `UIHelpers::GapLarge()`
+
+**Prefer the UIHelpers:: namespace in new code.**
 
 ### Panel Layout
 Default layout (can be reset):

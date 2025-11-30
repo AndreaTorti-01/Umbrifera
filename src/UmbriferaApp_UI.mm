@@ -1,4 +1,6 @@
 #include "UmbriferaApp.h"
+#include "UIConfig.h"
+#include "UIHelpers.h"
 #include "imgui.h"
 #include "imgui_internal.h"
 #include <GLFW/glfw3.h>
@@ -7,58 +9,31 @@
 // This file handles the User Interface (UI) rendering using Dear ImGui.
 // It defines how the windows, buttons, and images look and behave.
 
-// --- UI Constants ---
-static const float UI_GAP_SMALL = 10.0f;
-static const float UI_GAP_LARGE = 20.0f;
-static const float UI_BUTTON_HEIGHT = 40.0f;
-static const float UI_MARGIN = 10.0f;
-
-// --- UI Helpers ---
-static void UI_Separator() {
-    ImGui::Dummy(ImVec2(0.0f, UI_GAP_SMALL));
-    ImGui::Separator();
-    ImGui::Dummy(ImVec2(0.0f, UI_GAP_SMALL));
+// Local helper for sliders (uses UIHelpers version internally)
+static bool SliderWithReset(const char* label, float* v, float v_min, float v_max, float default_val, const char* format = "%.3f") {
+    return UIHelpers::SliderWithReset(label, v, v_min, v_max, default_val, format);
 }
 
-static void UI_Header(const char* text) {
-    ImGui::Text("%s", text);
-}
-
-static void UI_GapSmall() {
-    ImGui::Dummy(ImVec2(0.0f, UI_GAP_SMALL));
-}
-
-static void UI_GapLarge() {
-    ImGui::Dummy(ImVec2(0.0f, UI_GAP_LARGE));
-}
+// Aliases for backward compatibility with existing code
+static void UI_Separator() { UIHelpers::Separator(); }
+static void UI_Header(const char* text) { UIHelpers::Header(text); }
+static void UI_GapSmall() { UIHelpers::GapSmall(); }
+static void UI_GapLarge() { UIHelpers::GapLarge(); }
 
 void UmbriferaApp::SetupLayout() {
     // This function runs once to set up the initial window layout.
     if (m_FirstLayout) {
-        // We set a default size for the next window to be created.
         ImGui::SetNextWindowSize(ImVec2(300, 600), ImGuiCond_FirstUseEver);
         m_FirstLayout = false;
     }
 }
 
-// Helper function to detect double-click reset for sliders
-bool SliderWithReset(const char* label, float* v, float v_min, float v_max, float default_val, const char* format = "%.3f") {
-    // Create a hidden label for the slider so it has an ID but doesn't render text
-    char sliderLabel[128];
-    snprintf(sliderLabel, sizeof(sliderLabel), "##%s", label);
+void UmbriferaApp::OpenResizeDialog() {
+    if (!m_ProcessedTexture) return;
     
-    // Draw the slider
-    bool changed = ImGui::SliderFloat(sliderLabel, v, v_min, v_max, format);
-    
-    ImGui::SameLine();
-    
-    // Draw the reset button with the original label
-    if (ImGui::Button(label)) {
-        *v = default_val;
-        changed = true;
-    }
-    
-    return changed;
+    m_ShowResizeDialog = true;
+    m_ResizeTargetWidth = (int)m_RawTexture.width;
+    m_ResizeTargetHeight = (int)m_RawTexture.height;
 }
 
 void UmbriferaApp::RenderUI() {
@@ -406,6 +381,181 @@ void UmbriferaApp::RenderUI() {
             ImGui::EndPopup();
         }
     }
+    
+    // Resize Dialog
+    if (m_ShowResizeDialog && m_RawTexture) {
+        ImGui::OpenPopup("Resize Image");
+        UIHelpers::CenterNextWindow();
+        m_ShowResizeDialog = false;
+    }
+    
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(UIConfig::DIALOG_PADDING, UIConfig::DIALOG_PADDING));
+    if (ImGui::BeginPopupModal("Resize Image", NULL, UIHelpers::ModalFlags())) {
+        static int editingField = 0; // 0 = none, 1 = width, 2 = height
+        static char widthBuf[16] = "";
+        static char heightBuf[16] = "";
+        static bool initialized = false;
+        
+        int originalWidth = (int)m_RawTexture.width;
+        int originalHeight = (int)m_RawTexture.height;
+        float aspectRatio = (float)originalWidth / (float)originalHeight;
+        
+        // Initialize buffers on first open
+        if (!initialized) {
+            snprintf(widthBuf, sizeof(widthBuf), "%d", m_ResizeTargetWidth);
+            snprintf(heightBuf, sizeof(heightBuf), "%d", m_ResizeTargetHeight);
+            initialized = true;
+        }
+        
+        // Top margin
+        UIHelpers::GapSmall();
+        
+        // Original size display
+        ImGui::Text("Original Size: %d x %d pixels", originalWidth, originalHeight);
+        
+        UIHelpers::GapSmall();
+        
+        // Layout: Input fields on left, labels on right
+        float inputWidth = 80.0f;
+        
+        // Width row: [input] Width (pixels)
+        ImGui::SetNextItemWidth(inputWidth);
+        if (ImGui::InputText("##ResizeWidth", widthBuf, sizeof(widthBuf), ImGuiInputTextFlags_CharsDecimal)) {
+            std::string str(widthBuf);
+            
+            size_t start = str.find_first_not_of('0');
+            if (start == std::string::npos) {
+                str = str.empty() ? "" : "0";
+            } else if (start > 0) {
+                str = str.substr(start);
+            }
+            
+            if (!str.empty()) {
+                int val = std::atoi(str.c_str());
+                if (val > originalWidth) val = originalWidth;
+                if (val < 1) val = 1;
+                
+                m_ResizeTargetWidth = val;
+                m_ResizeTargetHeight = (int)((float)val / aspectRatio + 0.5f);
+                if (m_ResizeTargetHeight < 1) m_ResizeTargetHeight = 1;
+                if (m_ResizeTargetHeight > originalHeight) m_ResizeTargetHeight = originalHeight;
+                
+                snprintf(widthBuf, sizeof(widthBuf), "%d", m_ResizeTargetWidth);
+                snprintf(heightBuf, sizeof(heightBuf), "%d", m_ResizeTargetHeight);
+            }
+        }
+        ImGui::SameLine();
+        ImGui::Text("Width (pixels)");
+        
+        // Height row: [input] Height (pixels)
+        ImGui::SetNextItemWidth(inputWidth);
+        if (ImGui::InputText("##ResizeHeight", heightBuf, sizeof(heightBuf), ImGuiInputTextFlags_CharsDecimal)) {
+            std::string str(heightBuf);
+            
+            size_t start = str.find_first_not_of('0');
+            if (start == std::string::npos) {
+                str = str.empty() ? "" : "0";
+            } else if (start > 0) {
+                str = str.substr(start);
+            }
+            
+            if (!str.empty()) {
+                int val = std::atoi(str.c_str());
+                if (val > originalHeight) val = originalHeight;
+                if (val < 1) val = 1;
+                
+                m_ResizeTargetHeight = val;
+                m_ResizeTargetWidth = (int)((float)val * aspectRatio + 0.5f);
+                if (m_ResizeTargetWidth < 1) m_ResizeTargetWidth = 1;
+                if (m_ResizeTargetWidth > originalWidth) m_ResizeTargetWidth = originalWidth;
+                
+                snprintf(widthBuf, sizeof(widthBuf), "%d", m_ResizeTargetWidth);
+                snprintf(heightBuf, sizeof(heightBuf), "%d", m_ResizeTargetHeight);
+            }
+        }
+        ImGui::SameLine();
+        ImGui::Text("Height (pixels)");
+        
+        UIHelpers::Separator();
+        
+        // Centered buttons
+        int result = UIHelpers::CenteredButtonPair("Resize", "Cancel");
+        if (result == 1) {
+            // Perform resize using Lanczos3 shader
+            if (m_ResizeTargetWidth > 0 && m_ResizeTargetHeight > 0 &&
+                m_ResizeTargetWidth <= originalWidth && m_ResizeTargetHeight <= originalHeight &&
+                (m_ResizeTargetWidth != originalWidth || m_ResizeTargetHeight != originalHeight)) {
+                
+                // Create new resized raw texture
+                MTLTextureDescriptor* newRawDesc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Unorm 
+                    width:m_ResizeTargetWidth height:m_ResizeTargetHeight mipmapped:NO];
+                newRawDesc.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+                id<MTLTexture> newRawTexture = [m_Device newTextureWithDescriptor:newRawDesc];
+                
+                // Run box filter downscale compute shader
+                struct DownscaleParams {
+                    uint32_t srcWidth;
+                    uint32_t srcHeight;
+                    uint32_t dstWidth;
+                    uint32_t dstHeight;
+                } params = {
+                    (uint32_t)originalWidth,
+                    (uint32_t)originalHeight,
+                    (uint32_t)m_ResizeTargetWidth,
+                    (uint32_t)m_ResizeTargetHeight
+                };
+                
+                id<MTLCommandBuffer> cb = [m_CommandQueue commandBuffer];
+                id<MTLComputeCommandEncoder> ce = [cb computeCommandEncoder];
+                [ce setComputePipelineState:m_Lanczos3PSO];
+                [ce setTexture:m_RawTexture atIndex:0];
+                [ce setTexture:newRawTexture atIndex:1];
+                [ce setBytes:&params length:sizeof(params) atIndex:0];
+                
+                MTLSize threadsPerThreadgroup = MTLSizeMake(16, 16, 1);
+                MTLSize threadgroups = MTLSizeMake(
+                    (m_ResizeTargetWidth + 15) / 16,
+                    (m_ResizeTargetHeight + 15) / 16, 1);
+                
+                [ce dispatchThreadgroups:threadgroups threadsPerThreadgroup:threadsPerThreadgroup];
+                [ce endEncoding];
+                [cb commit];
+                [cb waitUntilCompleted];
+                
+                // Replace raw texture
+                m_RawTexture = newRawTexture;
+                
+                // Create new processed texture
+                MTLTextureDescriptor* targetDesc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm 
+                    width:m_ResizeTargetWidth height:m_ResizeTargetHeight mipmapped:YES];
+                NSUInteger maxDim = (m_ResizeTargetWidth > m_ResizeTargetHeight) ? m_ResizeTargetWidth : m_ResizeTargetHeight;
+                NSUInteger mipLevels = 1 + (NSUInteger)floor(log2((double)maxDim));
+                targetDesc.mipmapLevelCount = mipLevels;
+                targetDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+                m_ProcessedTexture = [m_Device newTextureWithDescriptor:targetDesc];
+                
+                // Reset view
+                m_ViewZoom = 1.0f;
+                m_ViewOffset[0] = 0.0f;
+                m_ViewOffset[1] = 0.0f;
+                
+                // Trigger reprocess
+                m_ImageDirty = true;
+            }
+            
+            initialized = false;
+            ImGui::CloseCurrentPopup();
+        }
+        if (result == 2) {
+            initialized = false;
+            ImGui::CloseCurrentPopup();
+        }
+        
+        UIHelpers::GapSmall();
+        
+        ImGui::EndPopup();
+    }
+    ImGui::PopStyleVar();
 
     // Create a DockSpace that covers the whole application window.
     // This allows us to drag and drop windows inside the app.
@@ -457,10 +607,9 @@ void UmbriferaApp::RenderUI() {
     }
     
     if (m_ProcessedTexture) {
-        // Margins
-        // Calculate bottom margin based on button bar height
+        // Margins (uses centralized config value)
         float buttonBarHeight = ImGui::GetFrameHeight() + 20.0f;
-        float margin = 10.0f; // Small uniform margin
+        float margin = UIConfig::IMAGE_MARGIN;
         
         ImVec2 windowSize = ImGui::GetContentRegionAvail();
         

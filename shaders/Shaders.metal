@@ -410,3 +410,81 @@ kernel void histogram_main(texture2d<float, access::read> inputTexture [[texture
     // Atomic increment
     atomic_fetch_add_explicit(&histogramBuffer[bin], 1, memory_order_relaxed);
 }
+
+// Downscale parameters passed via buffer
+struct DownscaleParams {
+    uint srcWidth;
+    uint srcHeight;
+    uint dstWidth;
+    uint dstHeight;
+};
+
+// Compute Shader: Box Filter Downscale (Area Averaging)
+// This is the mathematically correct way to downsample images.
+// Each output pixel is the weighted average of all source pixels that contribute to it.
+// Works in linear space for physically correct color blending.
+kernel void box_downscale(texture2d<float, access::read> srcTexture [[texture(0)]],
+                          texture2d<float, access::write> dstTexture [[texture(1)]],
+                          constant DownscaleParams& params [[buffer(0)]],
+                          uint2 gid [[thread_position_in_grid]]) {
+    
+    // Check bounds
+    if (gid.x >= params.dstWidth || gid.y >= params.dstHeight) {
+        return;
+    }
+    
+    // Calculate the source region that maps to this destination pixel
+    float scaleX = float(params.srcWidth) / float(params.dstWidth);
+    float scaleY = float(params.srcHeight) / float(params.dstHeight);
+    
+    // Source region bounds (floating point)
+    float srcX0 = float(gid.x) * scaleX;
+    float srcY0 = float(gid.y) * scaleY;
+    float srcX1 = float(gid.x + 1) * scaleX;
+    float srcY1 = float(gid.y + 1) * scaleY;
+    
+    // Integer bounds for iteration
+    int ix0 = int(floor(srcX0));
+    int iy0 = int(floor(srcY0));
+    int ix1 = int(ceil(srcX1));
+    int iy1 = int(ceil(srcY1));
+    
+    // Accumulate weighted color
+    float4 colorSum = float4(0.0);
+    float weightSum = 0.0;
+    
+    // Iterate over all source pixels that overlap with this destination pixel
+    for (int sy = iy0; sy < iy1; sy++) {
+        if (sy < 0 || sy >= int(params.srcHeight)) continue;
+        
+        // Calculate vertical overlap
+        float overlapY0 = max(float(sy), srcY0);
+        float overlapY1 = min(float(sy + 1), srcY1);
+        float wy = overlapY1 - overlapY0;
+        
+        for (int sx = ix0; sx < ix1; sx++) {
+            if (sx < 0 || sx >= int(params.srcWidth)) continue;
+            
+            // Calculate horizontal overlap
+            float overlapX0 = max(float(sx), srcX0);
+            float overlapX1 = min(float(sx + 1), srcX1);
+            float wx = overlapX1 - overlapX0;
+            
+            // Weight is the area of overlap
+            float weight = wx * wy;
+            
+            // Read source pixel and accumulate
+            float4 sample = srcTexture.read(uint2(sx, sy));
+            colorSum += sample * weight;
+            weightSum += weight;
+        }
+    }
+    
+    // Normalize by total weight
+    if (weightSum > 0.0) {
+        colorSum /= weightSum;
+    }
+    
+    dstTexture.write(colorSum, gid);
+}
+
