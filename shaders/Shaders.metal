@@ -44,8 +44,9 @@ struct Uniforms {
     float vignette_size;
     float grain_amount;
     float grain_size;
+    float clarity;       // Mid-frequency local contrast
+    float texture_amt;   // High-frequency detail enhancement
     float base_exposure;
-    // Removed tonemap_mode
     
     // Constants
     float contrast_pivot;
@@ -179,12 +180,12 @@ float snoise(float2 v)
 
 // Fragment Shader
 // Runs for every pixel on the screen.
-// Runs for every pixel on the screen.
 // It reads the input image, applies exposure, and outputs the color.
 fragment float4 fragment_main(VertexOut in [[stage_in]], 
                             constant Uniforms& uniforms [[buffer(0)]],
                             texture2d<float> inputTexture [[texture(0)]]) {
     constexpr sampler textureSampler (mag_filter::linear, min_filter::linear, address::clamp_to_zero);
+    constexpr sampler mipSampler (mag_filter::linear, min_filter::linear, mip_filter::linear, address::clamp_to_edge);
     
     // 1. Sample the texture
     // The input texture is 16-bit Linear RGB (from LibRaw)
@@ -204,7 +205,7 @@ fragment float4 fragment_main(VertexOut in [[stage_in]],
     
     // Tint: Positive = Magenta (More R+B, Less G?), Negative = Green (More G)
     // Actually standard tint: Positive = Magenta, Negative = Green.
-    // Green channel gain is usually inverse of tint.
+    // Green channel gain gain is usually inverse of tint.
     wb_gains.g -= uniforms.tint * 0.5;
     
     // Apply WB
@@ -214,6 +215,80 @@ fragment float4 fragment_main(VertexOut in [[stage_in]],
     // Apply Exposure (Linear Space)
     // Combine user exposure with base exposure (normalization)
     color.rgb *= pow(2.0, uniforms.exposure + uniforms.base_exposure);
+    
+    // --- 2.5. Clarity & Texture (Local Contrast Enhancement) ---
+    // Clarity: Mid-frequency contrast (larger structures, ~100-300px radius equivalent)
+    // Texture: High-frequency detail (fine details, ~10-25px radius equivalent)
+    // Uses local contrast enhancement preserving color ratios to avoid desaturation
+    
+    if (abs(uniforms.clarity) > 0.001 || abs(uniforms.texture_amt) > 0.001) {
+        float origLuma = dot(color.rgb, float3(0.2126, 0.7152, 0.0722));
+        
+        // Calculate LOD offset based on image size for resolution-independent behavior
+        // Target: consistent visual radius regardless of megapixels
+        // Reference: 4000px image = LOD 0 offset, 8000px = +1 LOD, 2000px = -1 LOD
+        float maxDim = max(float(inputTexture.get_width()), float(inputTexture.get_height()));
+        float lodOffset = log2(maxDim / 4000.0);
+        
+        // Texture: High-frequency detail extraction
+        // Target ~10-25px blur radius at 4000px image (finer than clarity)
+        if (abs(uniforms.texture_amt) > 0.001) {
+            float textureLod = 2.0 + lodOffset; // ~4px at LOD 2 * 2^offset
+            textureLod = clamp(textureLod, 0.5, 6.0);
+            
+            // Sample blurred version
+            float3 textureBlur = inputTexture.sample(mipSampler, in.uv, level(textureLod)).rgb;
+            
+            // Work in color space: extract detail per channel, apply to each
+            // This preserves hue while enhancing local contrast
+            float3 textureDetail = color.rgb - textureBlur;
+            
+            // Luminance protection: reduce effect in extreme highlights/shadows
+            float lumaProtect = smoothstep(0.0, 0.08, origLuma) * smoothstep(1.2, 0.85, origLuma);
+            float textureStrength = uniforms.texture_amt * 0.7 * lumaProtect;
+            
+            // Apply detail enhancement with soft limiting per channel
+            float3 textureAdjust = textureDetail * textureStrength;
+            textureAdjust = textureAdjust / (1.0 + abs(textureAdjust) * 3.0);
+            
+            // Add back to color - this is luminance-stable because we're adding
+            // the high-frequency component back, not scaling
+            color.rgb += textureAdjust;
+        }
+        
+        // Clarity: Mid-frequency structure enhancement
+        // Target ~100-300px blur radius at 4000px image
+        if (abs(uniforms.clarity) > 0.001) {
+            float clarityLod = 6.0 + lodOffset; // ~64px at LOD 6 * 2^offset
+            clarityLod = clamp(clarityLod, 3.0, 10.0);
+            
+            // Sample blurred version
+            float3 clarityBlur = inputTexture.sample(mipSampler, in.uv, level(clarityLod)).rgb;
+            
+            // Recalculate current luma after texture adjustment
+            float currentLuma = dot(color.rgb, float3(0.2126, 0.7152, 0.0722));
+            
+            // Work in color space like texture: extract per-channel detail
+            float3 clarityDetail = color.rgb - clarityBlur;
+            
+            // Edge-aware masking: reduce effect near strong edges to minimize halos
+            float detailMagnitude = length(clarityDetail);
+            float edgeMask = 1.0 - smoothstep(0.1, 0.4, detailMagnitude);
+            
+            // Midtone focus: clarity affects midtones more than extremes
+            float midtoneMask = 4.0 * currentLuma * (1.0 - saturate(currentLuma));
+            midtoneMask = pow(midtoneMask, 0.5);
+            
+            float clarityStrength = uniforms.clarity * 0.8 * midtoneMask * (0.3 + 0.7 * edgeMask);
+            
+            // Apply detail enhancement with soft limiting per channel
+            float3 clarityAdjust = clarityDetail * clarityStrength;
+            clarityAdjust = clarityAdjust / (1.0 + abs(clarityAdjust) * 2.0);
+            
+            // Additive approach - luminance stable
+            color.rgb += clarityAdjust;
+        }
+    }
     
     // --- 3. Lighting & Color ---
     
@@ -312,26 +387,46 @@ fragment float4 fragment_main(VertexOut in [[stage_in]],
     // Pivot around mid-grey (0.18)
     color.rgb = (color.rgb - uniforms.contrast_pivot) * uniforms.contrast + uniforms.contrast_pivot;
     
-    // Highlights / Shadows (Simple Luma-based masking)
+    // --- Tonal Controls with Gaussian Falloff ---
+    // Four equidistant control points in PERCEPTUAL (gamma) space:
+    // Blacks: 0.0, Shadows: 0.333, Highlights: 0.667, Whites: 1.0
+    // We must convert linear luma to perceptual space for correct weighting
+    // Sigma = 0.142 ensures 50% influence at half-distance (0.167) between centers
+    // Gaussian: exp(-d²/(2σ²)) where σ = 0.142
+    // Precomputed: 1/(2σ²) = 24.85
+    
     luma = dot(color.rgb, float3(0.2126, 0.7152, 0.0722));
     
-    // Shadows: Boost/Cut dark areas
-    float shadow_mask = 1.0 - smoothstep(0.0, 0.18, luma);
-    color.rgb += uniforms.shadows * 0.1 * shadow_mask; 
+    // Convert to perceptual space (approximate gamma 2.2)
+    float percLuma = pow(saturate(luma), 1.0/2.2);
     
-    // Highlights: Boost/Cut bright areas
-    float highlight_mask = smoothstep(0.18, 1.0, luma);
-    color.rgb += uniforms.highlights * 0.2 * highlight_mask;
+    float invTwoSigmaSq = 24.85; // 1 / (2 * 0.142²)
     
-    // Whites / Blacks (Levels)
-    // Dynamic Range Expansion
-    float black_point = -uniforms.blacks * uniforms.blacks_scale;
-    float white_point = 1.0 - uniforms.whites * uniforms.whites_scale;
+    // Blacks (center = 0.0 in perceptual space)
+    float blacksDist = percLuma - 0.0;
+    float blacksWeight = exp(-blacksDist * blacksDist * invTwoSigmaSq);
     
-    // Avoid division by zero
-    if (white_point <= black_point + 0.001) white_point = black_point + 0.001;
+    // Shadows (center = 0.333 in perceptual space)
+    float shadowsDist = percLuma - 0.333;
+    float shadowsWeight = exp(-shadowsDist * shadowsDist * invTwoSigmaSq);
     
-    color.rgb = (color.rgb - black_point) / (white_point - black_point);
+    // Highlights (center = 0.667 in perceptual space)
+    float highlightsDist = percLuma - 0.667;
+    float highlightsWeight = exp(-highlightsDist * highlightsDist * invTwoSigmaSq);
+    
+    // Whites (center = 1.0 in perceptual space)
+    float whitesDist = percLuma - 1.0;
+    float whitesWeight = exp(-whitesDist * whitesDist * invTwoSigmaSq);
+    
+    // Apply adjustments - all additive with Gaussian weighting
+    // Uniform multiplier for all controls now that space is correct
+    float tonalAdjust = 0.0;
+    tonalAdjust += uniforms.blacks * 0.12 * blacksWeight;
+    tonalAdjust += uniforms.shadows * 0.12 * shadowsWeight;
+    tonalAdjust += uniforms.highlights * 0.12 * highlightsWeight;
+    tonalAdjust += uniforms.whites * 0.12 * whitesWeight;
+    
+    color.rgb += tonalAdjust;
     
     // --- 4. Effects ---
     

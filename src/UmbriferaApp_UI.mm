@@ -904,6 +904,12 @@ void UmbriferaApp::RenderUI() {
     
     UI_GapSmall();
     
+    // Presence: Local Contrast Controls
+    if (SliderWithReset("Texture", &m_Uniforms.texture_amt, -1.0f, 1.0f, 0.0f)) changed = true;
+    if (SliderWithReset("Clarity", &m_Uniforms.clarity, -1.0f, 1.0f, 0.0f)) changed = true;
+    
+    UI_GapSmall();
+    
     if (SliderWithReset("Vibrance", &m_Uniforms.vibrance, -1.0f, 1.0f, 0.0f)) changed = true;
     if (SliderWithReset("Saturation", &m_Uniforms.saturation, 0.0f, 2.0f, 1.0f)) changed = true;
     

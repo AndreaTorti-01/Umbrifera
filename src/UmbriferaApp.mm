@@ -35,6 +35,8 @@ UmbriferaApp::UmbriferaApp() {
     m_Uniforms.vignette_size = 0.5f;
     m_Uniforms.grain_amount = 0.0f;
     m_Uniforms.grain_size = 1.6f; // Default coarseness
+    m_Uniforms.clarity = 0.0f;
+    m_Uniforms.texture_amt = 0.0f;
     
     // Initialize Constants
     m_Uniforms.contrast_pivot = 0.18f; // Mid-grey
@@ -307,10 +309,9 @@ std::string UmbriferaApp::SerializeUniforms(const Uniforms& u) {
     ss << "vignette_feather=" << u.vignette_feather << "\n";
     ss << "vignette_size=" << u.vignette_size << "\n";
     ss << "grain_amount=" << u.grain_amount << "\n";
+    ss << "clarity=" << u.clarity << "\n";
+    ss << "texture_amt=" << u.texture_amt << "\n";
     ss << "base_exposure=" << u.base_exposure << "\n";
-    ss << "base_exposure=" << u.base_exposure << "\n";
-    // ss << "tonemap_mode=" << u.tonemap_mode << "\n"; // Removed
-    ss << "hsl_enabled=" << u.hsl_enabled << "\n";
     ss << "hsl_enabled=" << u.hsl_enabled << "\n";
     
     for (int i = 0; i < 15; i++) {
@@ -346,10 +347,9 @@ void UmbriferaApp::DeserializeUniforms(const std::string& data, Uniforms& u) {
             else if (key == "vignette_feather") u.vignette_feather = std::clamp(std::stof(valStr), 0.0f, 1.0f);
             else if (key == "vignette_size") u.vignette_size = std::clamp(std::stof(valStr), 0.0f, 1.0f);
             else if (key == "grain_amount") u.grain_amount = std::clamp(std::stof(valStr), 0.0f, 1.0f);
-            else if (key == "base_exposure") u.base_exposure = std::stof(valStr); // No strict clamp, but usually > 0
-            else if (key == "base_exposure") u.base_exposure = std::stof(valStr); // No strict clamp, but usually > 0
-            // else if (key == "tonemap_mode") u.tonemap_mode = std::clamp(std::stoi(valStr), 0, 2); // Removed
-            else if (key == "hsl_enabled") u.hsl_enabled = std::clamp(std::stoi(valStr), 0, 1);
+            else if (key == "clarity") u.clarity = std::clamp(std::stof(valStr), -1.0f, 1.0f);
+            else if (key == "texture_amt") u.texture_amt = std::clamp(std::stof(valStr), -1.0f, 1.0f);
+            else if (key == "base_exposure") u.base_exposure = std::stof(valStr);
             else if (key == "hsl_enabled") u.hsl_enabled = std::clamp(std::stoi(valStr), 0, 1);
             else if (key.rfind("hsl_", 0) == 0) {
                 // Parse hsl_N=x,y,z
@@ -498,12 +498,19 @@ void UmbriferaApp::CalculateAutoSettings() {
     if (m_RawHistogram.empty()) return;
     
     // Analyze Raw Histogram (256 bins)
-    // We want to find the range of the data and the mean.
+    // Find the range and distribution of tonal values
     
     long totalPixels = 0;
     long sumLuma = 0;
     int minBin = -1;
     int maxBin = -1;
+    
+    // Find percentile points for robust black/white point detection
+    // Ignore extreme 0.5% on each end to avoid outliers
+    long runningCount = 0;
+    int percentile05 = 0;  // 0.5th percentile
+    int percentile995 = 255; // 99.5th percentile
+    bool found05 = false;
     
     for (int i = 0; i < 256; i++) {
         uint32_t count = m_RawHistogram[i];
@@ -517,69 +524,93 @@ void UmbriferaApp::CalculateAutoSettings() {
     
     if (totalPixels == 0) return;
     
+    // Second pass: find percentiles
+    long threshold05 = (long)(totalPixels * 0.005f);
+    long threshold995 = (long)(totalPixels * 0.995f);
+    runningCount = 0;
+    
+    for (int i = 0; i < 256; i++) {
+        runningCount += m_RawHistogram[i];
+        if (!found05 && runningCount >= threshold05) {
+            percentile05 = i;
+            found05 = true;
+        }
+        if (runningCount >= threshold995) {
+            percentile995 = i;
+            break;
+        }
+    }
+    
     float meanLuma = (float)sumLuma / totalPixels / 255.0f; // 0.0 - 1.0
-    float minLuma = (float)minBin / 255.0f;
-    float maxLuma = (float)maxBin / 255.0f;
+    float minLuma = (float)percentile05 / 255.0f;  // Robust min (0.5th percentile)
+    float maxLuma = (float)percentile995 / 255.0f; // Robust max (99.5th percentile)
     
     // 1. Auto Exposure
-    // Target mean luma around mid-grey (0.18) but slightly brighter for "pleasing" look (e.g. 0.25)
-    // But raw data is linear, so 0.18 is actually quite dark visually.
-    // Let's target 0.18 in linear space.
+    // Be conservative: don't force every image to mid-grey
+    // Only adjust if significantly off from reasonable range
     float targetMean = 0.18f;
     
-    // Avoid division by zero or extreme values
     if (meanLuma < 0.001f) meanLuma = 0.001f;
     
-    // Exposure shift = log2(Target / Current)
-    float exposureShift = log2f(targetMean / meanLuma);
+    // Calculate what exposure would center the image
+    float fullShift = log2f(targetMean / meanLuma);
     
-    // Clamp exposure shift to reasonable range
-    exposureShift = std::clamp(exposureShift, -3.0f, 3.0f);
+    // Apply only partial correction to preserve intended brightness
+    // Dark images stay somewhat dark, bright images stay somewhat bright
+    float exposureShift = fullShift * 0.6f; // 60% correction
+    exposureShift = std::clamp(exposureShift, -2.5f, 2.5f);
     
     m_Uniforms.exposure = exposureShift;
     
     // 2. Auto Contrast
-    // Default to slightly boosted contrast
-    m_Uniforms.contrast = 1.1f;
+    // Moderate contrast boost for punch
+    m_Uniforms.contrast = 1.12f;
     
-    // 3. Auto Blacks/Whites (Dynamic Range Expansion)
-    // We want to stretch the histogram to fill 0.0 - 1.0
-    // After exposure shift, the new min/max will be:
-    // newMin = minLuma * 2^exposure
-    // newMax = maxLuma * 2^exposure
+    // 3. Auto Blacks/Whites
+    // With new Gaussian model, these are additive adjustments
+    // Calculate how much to adjust based on histogram endpoints
     
     float gain = powf(2.0f, exposureShift);
-    float newMin = minLuma * gain;
-    float newMax = maxLuma * gain;
+    float newMin = minLuma * gain; // Predicted min after exposure
+    float newMax = maxLuma * gain; // Predicted max after exposure
     
-    // Blacks: We want newMin to map to 0.0
-    // Formula: (x - black_point) / (white_point - black_point)
-    // black_point = -blacks * 0.1
-    // So we want -blacks * 0.1 approx newMin
-    // blacks = -newMin / 0.1 = -newMin * 10
+    // Blacks: if newMin > 0, we have room to deepen blacks
+    // Slider value of 1.0 with weight 0.15 adds 0.15 to luma
+    // We want to shift blacks down if there's headroom
+    // autoBlacks negative = darken blacks
+    float autoBlacks = 0.0f;
+    if (newMin > 0.02f) {
+        // There's room to set a black point
+        // Scale: newMin of 0.1 -> blacks of -0.5 (moderate darkening)
+        autoBlacks = -std::clamp(newMin * 5.0f, 0.0f, 0.6f);
+    }
     
-    // Whites: We want newMax to map to 1.0
-    // white_point = 1.0 - whites * 0.2
-    // So we want 1.0 - whites * 0.2 approx newMax
-    // whites * 0.2 = 1.0 - newMax
-    // whites = (1.0 - newMax) / 0.2 = (1.0 - newMax) * 5
+    // Whites: if newMax < 1, we have room to brighten whites
+    // autoWhites positive = brighten whites  
+    float autoWhites = 0.0f;
+    if (newMax < 0.95f) {
+        // There's room to extend whites
+        // Scale: newMax of 0.8 -> whites of 0.5 (moderate brightening)
+        autoWhites = std::clamp((1.0f - newMax) * 2.5f, 0.0f, 0.5f);
+    }
     
-    float autoBlacks = -newMin * 10.0f;
-    float autoWhites = (1.0f - newMax) * 5.0f;
+    m_Uniforms.blacks = std::clamp(autoBlacks, -1.0f, 1.0f);
+    m_Uniforms.whites = std::clamp(autoWhites, -1.0f, 1.0f);
     
-    m_Uniforms.blacks = std::clamp(autoBlacks, -0.5f, 0.5f); // Don't crush too much
-    m_Uniforms.whites = std::clamp(autoWhites, -0.5f, 0.5f); // Don't blow out too much
+    // 4. Reset tonal controls to neutral
+    // Don't auto-adjust shadows/highlights - let user control mood
+    m_Uniforms.shadows = 0.0f;
+    m_Uniforms.highlights = 0.0f;
     
-    // 4. Auto Vibrance/Saturation
-    // Just set reasonable defaults
-    m_Uniforms.vibrance = 0.2f;
+    // 5. Modest vibrance, neutral saturation
+    m_Uniforms.vibrance = 0.1f;
     m_Uniforms.saturation = 1.0f;
     
-    // Reset others
-    m_Uniforms.highlights = 0.0f;
-    m_Uniforms.shadows = 0.0f;
+    // 6. Reset other controls to neutral
     m_Uniforms.temperature = 0.0f;
     m_Uniforms.tint = 0.0f;
+    m_Uniforms.clarity = 0.0f;
+    m_Uniforms.texture_amt = 0.0f;
     
     // Trigger update
     m_ImageDirty = true;

@@ -188,14 +188,28 @@ void UmbriferaApp::RenderFrame() {
             
             // Create Metal Texture for Raw Data (16-bit RGBA)
             // MTLPixelFormatRGBA16Unorm: 16-bit per channel, normalized 0.0-1.0
-            MTLTextureDescriptor* textureDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Unorm width:m_PendingWidth height:m_PendingHeight mipmapped:NO];
-            textureDescriptor.usage = MTLTextureUsageShaderRead;
+            // Enable mipmaps for Clarity/Texture local contrast processing
+            MTLTextureDescriptor* textureDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Unorm width:m_PendingWidth height:m_PendingHeight mipmapped:YES];
+            
+            // Calculate mipmap levels for raw texture
+            NSUInteger rawMaxDim = (m_PendingWidth > m_PendingHeight) ? m_PendingWidth : m_PendingHeight;
+            NSUInteger rawMipLevels = 1 + (NSUInteger)floor(log2((double)rawMaxDim));
+            textureDescriptor.mipmapLevelCount = rawMipLevels;
+            textureDescriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
             m_RawTexture = [m_Device newTextureWithDescriptor:textureDescriptor];
             
             // Upload data to GPU
             MTLRegion region = MTLRegionMake2D(0, 0, m_PendingWidth, m_PendingHeight);
             // Bytes per row = Width * 4 channels * 2 bytes (16-bit)
             [m_RawTexture replaceRegion:region mipmapLevel:0 withBytes:m_PendingTextureData16.data() bytesPerRow:m_PendingWidth * 8];
+            
+            // Generate mipmaps for raw texture (needed for Clarity/Texture)
+            id<MTLCommandBuffer> mipCB = [m_CommandQueue commandBuffer];
+            id<MTLBlitCommandEncoder> mipBlit = [mipCB blitCommandEncoder];
+            [mipBlit generateMipmapsForTexture:m_RawTexture];
+            [mipBlit endEncoding];
+            [mipCB commit];
+            [mipCB waitUntilCompleted];
             
             // Create Processed Texture (Render Target)
             // This is what we display on screen.

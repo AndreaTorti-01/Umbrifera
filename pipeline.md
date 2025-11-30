@@ -28,7 +28,7 @@ The 16-bit integer RGBA data is uploaded to the GPU as a Metal texture.
 
 ## 3. Image Processing (GPU - Metal Fragment Shader)
 
-The core processing happens in the fragment shader (`fragment_main` in `Shaders.metal`). The input is the normalized Linear sRGB image.
+The core processing happens in the fragment shader (`fragment_main` in `Shaders.metal`). The input is the normalized Linear sRGB image with mipmaps pre-generated for local contrast processing.
 
 ### Step 3.1: White Balance (Temperature & Tint)
 Adjusts the color balance relative to the camera's "As Shot" WB.
@@ -44,14 +44,45 @@ Adjusts the overall brightness in linear space.
 *   **Formula**: `color *= 2^(exposure + base_exposure)`
 *   `base_exposure` is currently 0.0 (since LibRaw handles normalization).
 
-### Step 3.3: Saturation & Vibrance
+### Step 3.3: Clarity & Texture (Local Contrast Enhancement)
+Enhances local contrast at different frequency bands using mipmap-based blur approximation.
+
+#### Resolution Independence
+*   **LOD Offset**: `log2(maxDimension / 4000)` ensures consistent visual radius regardless of image resolution.
+*   Reference: 4000px image = base LOD, 8000px = +1 LOD, 2000px = -1 LOD.
+
+#### Texture (High-Frequency Detail)
+*   **Purpose**: Enhances fine details like skin texture, bark, fabric weave.
+*   **Radius**: ~10-25 pixels equivalent at 4000px image, using LOD ~2.0 + offset (clamped 0.5-6).
+*   **Algorithm**:
+    1.  Sample blurred version from adaptive mipmap level
+    2.  Extract per-channel detail: `detail = color - blurred_color`
+    3.  Apply luminance protection to avoid artifacts in extreme highlights/shadows
+    4.  Soft-clip with tanh-like response per channel
+    5.  Add detail back: `color += detail_adjusted` (additive, luminance-stable)
+*   **Range**: -1.0 (smoothing) to +1.0 (enhancement)
+
+#### Clarity (Mid-Frequency Structure)
+*   **Purpose**: Enhances larger structures like facial features, fabric folds, architectural details.
+*   **Radius**: ~100-300 pixels equivalent at 4000px image, using LOD ~6.0 + offset (clamped 3-10).
+*   **Algorithm**:
+    1.  Sample blurred version from adaptive mipmap level
+    2.  Extract mid-frequency detail: `detail = current_luma - blurred_luma`
+    3.  Apply edge-aware masking to minimize halos near strong edges
+    4.  Focus effect on midtones (parabolic mask)
+    5.  Soft-clip with tanh-like response
+    6.  Scale RGB proportionally: `color *= new_luma / current_luma`
+*   **Range**: -1.0 (softening) to +1.0 (enhancement)
+*   **Halo Prevention**: Edge strength detection reduces effect near strong luminance transitions.
+
+### Step 3.4: Saturation & Vibrance
 *   **Luma Calculation**: `dot(rgb, float3(0.2126, 0.7152, 0.0722))` (Rec.709 coefficients).
 *   **Vibrance**: Smart saturation that boosts muted colors more than already saturated ones.
     *   Calculates current saturation: `(max - min) / max`.
     *   Mixes original color with Luma based on inverse saturation.
 *   **Saturation**: Global linear interpolation between Luma (greyscale) and Color.
 
-### Step 3.4: HSL Adjustments (Selective Color)
+### Step 3.5: HSL Adjustments (Selective Color)
 Allows tweaking Hue, Saturation, and Luminance for specific color ranges.
 *   **Color Model**: RGB is converted to HSV.
 *   **Slicing**: The Hue circle is divided into 15 slices.
@@ -59,33 +90,40 @@ Allows tweaking Hue, Saturation, and Luminance for specific color ranges.
 *   **Application**: The weighted adjustments are applied to the pixel's H, S, and V values.
 *   **Conversion**: Converted back to RGB.
 
-### Step 3.5: Hue Offset
+### Step 3.6: Hue Offset
 Global rotation of the hue wheel.
 *   Applied in HSV space.
 
-### Step 3.6: Contrast
+### Step 3.7: Contrast
 Adjusts the contrast curve pivoting around mid-grey.
 *   **Pivot**: 0.18 (Linear Mid-Grey).
 *   **Formula**: `color = (color - 0.18) * contrast + 0.18`.
 
-### Step 3.7: Highlights & Shadows
-Recover detail in bright or dark areas using luma masking.
-*   **Shadows Mask**: `1.0 - smoothstep(0.0, 0.18, luma)`. Targets darkest tones.
-*   **Highlights Mask**: `smoothstep(0.18, 1.0, luma)`. Targets brightest tones.
-*   **Application**: Additive adjustment (`color += adjustment * mask`).
+### Step 3.8: Tonal Controls (Blacks, Shadows, Highlights, Whites)
+Four equidistant tonal controls with Gaussian falloff, similar to HSL adjustments.
 
-### Step 3.8: Whites & Blacks (Levels)
-Expands or compresses the dynamic range endpoints.
-*   **Black Point**: `-blacks * 0.1`.
-*   **White Point**: `1.0 - whites * 0.2`.
-*   **Formula**: `color = (color - black_point) / (white_point - black_point)`.
+#### Control Centers (in normalized luminance 0-1)
+*   **Blacks**: 0.0 (pure black)
+*   **Shadows**: 0.333 (dark tones)
+*   **Highlights**: 0.667 (bright tones)
+*   **Whites**: 1.0 (pure white)
+
+#### Gaussian Falloff
+*   **Sigma**: 0.142, calculated so that at half-distance (0.167) between centers, influence = 50%
+*   **Formula**: `weight = exp(-distance² / (2 * σ²))` where `1/(2σ²) = 24.85`
+
+#### Application
+*   All four controls are additive adjustments weighted by their Gaussian falloff
+*   **Blacks/Whites multiplier**: 0.15 (endpoint controls, stronger effect)
+*   **Shadows/Highlights multiplier**: 0.12 (midtone controls, balanced effect)
+*   **Formula**: `color += (blacks*0.15*blacksWeight + shadows*0.12*shadowsWeight + highlights*0.12*highlightsWeight + whites*0.15*whitesWeight)`
 
 ### Step 3.9: Vignette
 Darkens the corners of the image.
 *   **Shape**: Circular, aspect-ratio corrected (square relative to the crop).
 *   **Falloff**: `smoothstep` based on distance from center.
 
-### Step 3.10: Tone Mapping
+### Step 3.11: Tone Mapping
 Compresses the high dynamic range (linear) into the displayable range (0.0 - 1.0).
 *   **Standard Gamma**: Simple saturation (clipping) followed by `linear_to_srgb` (approx. Gamma 2.2).
 *   *Note: Previous ACES and Reinhard tone mapping options have been removed in favor of a pure standard gamma workflow.*
@@ -112,12 +150,20 @@ High-quality image resizing using box filter (area averaging).
 
 ## 6. Auto Adjust Logic
 
-The "Auto" button calculates optimal starting values based on the **Raw Histogram** (computed from the linear raw data immediately after loading).
+The "Auto" button calculates optimal starting values based on the **Raw Histogram** (computed from the linear raw data immediately after loading). The goal is a natural look that respects the image's intended brightness - dark images stay dark, bright images stay bright.
 
-1.  **Raw Histogram Analysis**: Computes the mean luminance of the linear data.
-2.  **Auto Exposure**: Calculates the exposure shift needed to move the mean luminance to a target value (0.18 linear).
-3.  **Auto Contrast**: Sets a default boost (1.1).
-4.  **Auto Blacks/Whites**:
-    *   Estimates the new min/max after exposure shift.
-    *   Calculates `blacks` and `whites` slider values to stretch this range to fill 0.0 - 1.0.
-5.  **Defaults**: Sets reasonable defaults for Vibrance (0.2) and Saturation (1.0).
+1.  **Raw Histogram Analysis**: 
+    *   Computes mean luminance
+    *   Finds robust min/max using 0.5th and 99.5th percentiles (ignores outliers)
+2.  **Auto Exposure** (Conservative):
+    *   Calculates full exposure shift to reach 0.18 (linear mid-grey)
+    *   Applies only 60% of the correction to preserve intended brightness
+    *   Clamped to ±2.5 stops
+3.  **Auto Contrast**: Gentle boost (1.05) for subtle definition.
+4.  **Auto Blacks/Whites** (Additive Model):
+    *   Estimates new min/max after exposure shift
+    *   **Blacks**: Darkened if newMin > 0.02 (headroom exists), scale ~5x
+    *   **Whites**: Brightened if newMax < 0.95 (headroom exists), scale ~2.5x
+5.  **Shadows/Highlights**: Reset to 0 - left for user creative control
+6.  **Auto Vibrance**: Modest boost (0.1) for natural colors
+7.  **Resets**: Temperature, Tint, Clarity, Texture, Shadows, Highlights set to neutral (0.0)

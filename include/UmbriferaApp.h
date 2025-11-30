@@ -23,17 +23,18 @@ struct Uniforms {
     float whites;
     float blacks;
     float saturation;
-    float vibrance;      // New
-    float hue_offset;    // New
-    float temperature;   // New
-    float tint;          // New
-    float vignette_strength; // New
-    float vignette_feather;  // New
-    float vignette_size;     // New
-    float grain_amount;      // New
-    float grain_size;        // New: Controls coarseness
+    float vibrance;
+    float hue_offset;
+    float temperature;
+    float tint;
+    float vignette_strength;
+    float vignette_feather;
+    float vignette_size;
+    float grain_amount;
+    float grain_size;
+    float clarity;       // Mid-frequency local contrast
+    float texture_amt;   // High-frequency detail enhancement
     float base_exposure;
-    // Removed tonemap_mode
     
     // Constants (passed as uniforms for consistency)
     float contrast_pivot;
