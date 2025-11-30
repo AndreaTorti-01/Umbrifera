@@ -136,7 +136,7 @@ Single-pass fragment shader applies (in order):
 - Shows only RAW formats: NEF, CR2, CR3, ARW, RAF, DNG
 - Thumbnail extraction via LibRaw (async background thread)
 - Case-insensitive alphabetical sorting (`strcasecmp`)
-- Buttons: Up arrow (`assets/arrow_up.png`), Path input, Open Folder (`assets/folder_open_nf.png`)
+- Buttons: Up arrow (`assets/arrow_shape_up_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png`), Path input, Open Folder (`assets/folder_open_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png`)
 - All buttons same height as bar for visual consistency
 
 ### Export
@@ -195,9 +195,9 @@ Set `m_ImageDirty = true` when uniforms change to trigger GPU reprocessing.
 
 ## Asset Requirements
 Icons should be PNG format, located in `assets/`:
-- `folder_open_nf.png`: Open folder button
-- `arrow_up.png`: Up directory button
-- `folder_closed.png`, `folder_open.png`: Navigator tree icons
+- `folder_open_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png`: Open folder button
+- `arrow_shape_up_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png`: Up directory button
+- `folder_24dp_E3E3E3_FILL1_wght400_GRAD0_opsz24.png`, `folder_open_24dp_E3E3E3_FILL1_wght400_GRAD0_opsz24.png`: Navigator tree icons
 
 ---
 

@@ -205,16 +205,16 @@ void FileNavigator::Init(id<MTLDevice> device) {
     m_Device = device;
     
     // Load Folder Icon (if exists)
-    m_FolderIconTexture = LoadTextureFromAsset(device, "folder_open_nf.png");
+    m_FolderIconTexture = LoadTextureFromAsset(device, "folder_open_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png");
     
     // Load Up Arrow Icon
-    m_UpArrowTexture = LoadTextureFromAsset(device, "arrow_up.png");
+    m_UpArrowTexture = LoadTextureFromAsset(device, "arrow_shape_up_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png");
     
     m_LoaderThread = std::thread(&FileNavigator::ThumbnailLoaderThread, this);
     
     // Load Folder Icons
-    m_FolderClosedTexture = LoadTextureFromAsset(device, "folder_closed.png");
-    m_FolderOpenTexture = LoadTextureFromAsset(device, "folder_open.png");
+    m_FolderClosedTexture = LoadTextureFromAsset(device, "folder_24dp_E3E3E3_FILL1_wght400_GRAD0_opsz24.png");
+    m_FolderOpenTexture = LoadTextureFromAsset(device, "folder_open_24dp_E3E3E3_FILL1_wght400_GRAD0_opsz24.png");
 }
 
 void FileNavigator::SetRootPath(const std::string& path) {
