@@ -33,4 +33,16 @@ constexpr float PRESET_BUTTON_WIDTH = 100.0f;
 constexpr float PRESET_BUTTON_HEIGHT = 60.0f;
 constexpr float PRESETS_AREA_HEIGHT = 80.0f;
 
+// --- Crop Mode ---
+constexpr float CROP_RATIO_BUTTON_HEIGHT = 40.0f;
+constexpr float CROP_CORNER_RADIUS = 8.0f;
+constexpr float CROP_CORNER_HIT_RADIUS = 16.0f;
+constexpr float CROP_OVERLAY_ALPHA = 0.6f;
+
+// --- Arbitrary Rotation Mode ---
+constexpr float ROTATE_GRID_SPACING = 20.0f;      // Spacing between grid lines
+constexpr int ROTATE_GRID_MAJOR_EVERY = 5;        // Major line every N lines
+constexpr float ROTATE_SENSITIVITY = 0.15f;       // Degrees per pixel of mouse movement
+constexpr float ROTATE_MAX_ANGLE = 90.0f;         // Maximum rotation in either direction
+
 } // namespace UIConfig

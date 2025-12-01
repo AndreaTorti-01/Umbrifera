@@ -583,3 +583,60 @@ kernel void box_downscale(texture2d<float, access::read> srcTexture [[texture(0)
     dstTexture.write(colorSum, gid);
 }
 
+// Rotation shader uniforms
+struct RotateParams {
+    float cosAngle;    // cos(angle)
+    float sinAngle;    // sin(angle)
+    float scale;       // scale factor to cover output after rotation
+    uint srcWidth;     // source texture width
+    uint srcHeight;    // source texture height
+};
+
+// Rotation compute shader
+// Rotates the source texture around its center, scales to cover the output area,
+// and writes to the destination texture (which may have different dimensions)
+kernel void rotate_kernel(
+    texture2d<float, access::sample> srcTexture [[texture(0)]],
+    texture2d<float, access::write> dstTexture [[texture(1)]],
+    constant RotateParams& params [[buffer(0)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    // Output dimensions
+    uint dstW = dstTexture.get_width();
+    uint dstH = dstTexture.get_height();
+    
+    if (gid.x >= dstW || gid.y >= dstH) return;
+    
+    // Output center
+    float dstCenterX = float(dstW) * 0.5;
+    float dstCenterY = float(dstH) * 0.5;
+    
+    // Source center
+    float srcCenterX = float(params.srcWidth) * 0.5;
+    float srcCenterY = float(params.srcHeight) * 0.5;
+    
+    // Destination position relative to center
+    float dx = float(gid.x) + 0.5 - dstCenterX;
+    float dy = float(gid.y) + 0.5 - dstCenterY;
+    
+    // Inverse rotation (rotate backwards to find source position)
+    // and scale (divide by scale to find source position)
+    float invScale = 1.0 / params.scale;
+    float rx = (dx * params.cosAngle + dy * params.sinAngle) * invScale;
+    float ry = (-dx * params.sinAngle + dy * params.cosAngle) * invScale;
+    
+    // Source position
+    float srcX = rx + srcCenterX;
+    float srcY = ry + srcCenterY;
+    
+    // Convert to UV coordinates for sampling
+    float u = srcX / float(params.srcWidth);
+    float v = srcY / float(params.srcHeight);
+    
+    // Sample with bilinear filtering
+    constexpr sampler texSampler(mag_filter::linear, min_filter::linear, address::clamp_to_edge);
+    float4 color = srcTexture.sample(texSampler, float2(u, v));
+    
+    dstTexture.write(color, gid);
+}
+

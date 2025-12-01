@@ -199,6 +199,43 @@ void UmbriferaApp::InitGraphics() {
     InitMetal();
     // Load Logo
     LoadLogo("assets/logo.png");
+    
+    m_RotateCWTexture = LoadAssetTexture("rotate_90_degrees_cw_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png");
+    m_RotateCCWTexture = LoadAssetTexture("rotate_90_degrees_ccw_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png");
+    m_CropTexture = LoadAssetTexture("crop_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png");
+    m_CropRotateTexture = LoadAssetTexture("crop_rotate_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png");
+    m_FitScreenTexture = LoadAssetTexture("fit_screen_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png");
+}
+
+id<MTLTexture> UmbriferaApp::LoadAssetTexture(const std::string& filename) {
+    std::string path = "assets/" + filename;
+    NSString* nsPath = [NSString stringWithUTF8String:path.c_str()];
+    NSImage* image = [[NSImage alloc] initWithContentsOfFile:nsPath];
+    
+    if (!image) {
+        // Try from parent directory (running from build folder)
+        path = "../assets/" + filename;
+        nsPath = [NSString stringWithUTF8String:path.c_str()];
+        image = [[NSImage alloc] initWithContentsOfFile:nsPath];
+    }
+    
+    if (!image) {
+        std::cerr << "Failed to load asset: " << filename << std::endl;
+        return nil;
+    }
+    
+    CGImageRef cgImage = [image CGImageForProposedRect:nil context:nil hints:nil];
+    NSUInteger width = CGImageGetWidth(cgImage);
+    NSUInteger height = CGImageGetHeight(cgImage);
+    
+    MTLTextureDescriptor* textureDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:width height:height mipmapped:NO];
+    id<MTLTexture> texture = [m_Device newTextureWithDescriptor:textureDescriptor];
+    
+    NSBitmapImageRep* rep = [[NSBitmapImageRep alloc] initWithCGImage:cgImage];
+    MTLRegion region = MTLRegionMake2D(0, 0, width, height);
+    [texture replaceRegion:region mipmapLevel:0 withBytes:[rep bitmapData] bytesPerRow:[rep bytesPerRow]];
+    
+    return texture;
 }
 
 void UmbriferaApp::LoadLogo(const std::string& path) {

@@ -67,6 +67,7 @@ void UmbriferaApp::InitMetal() {
     id<MTLFunction> fragmentFunction = [library newFunctionWithName:@"fragment_main"];
     id<MTLFunction> histogramFunction = [library newFunctionWithName:@"histogram_main"];
     id<MTLFunction> boxDownscaleFunction = [library newFunctionWithName:@"box_downscale"];
+    id<MTLFunction> rotateFunction = [library newFunctionWithName:@"rotate_kernel"];
 
     // 5. Create Render Pipeline State (for drawing the image)
     MTLRenderPipelineDescriptor* pipelineDescriptor = [[MTLRenderPipelineDescriptor alloc] init];
@@ -92,6 +93,13 @@ void UmbriferaApp::InitMetal() {
     m_Lanczos3PSO = [m_Device newComputePipelineStateWithFunction:boxDownscaleFunction error:&error];
     if (!m_Lanczos3PSO) {
         NSLog(@"Error creating box downscale pipeline state: %@", error);
+        return;
+    }
+    
+    // 8. Create Compute Pipeline State (for rotation)
+    m_RotatePSO = [m_Device newComputePipelineStateWithFunction:rotateFunction error:&error];
+    if (!m_RotatePSO) {
+        NSLog(@"Error creating rotate pipeline state: %@", error);
         return;
     }
 }
@@ -238,42 +246,235 @@ void UmbriferaApp::RenderFrame() {
             m_TextureUploadPending = false;
             m_IsLoading = false;
             
+            // Reset view state for new image
+            m_ViewZoom = 1.0f;
+            m_ViewOffset[0] = 0.0f;
+            m_ViewOffset[1] = 0.0f;
+            m_RotationAngle = 0;
+            
             // Set the base exposure calculated by the loader
             m_Uniforms.base_exposure = m_InitialExposure;
             
             // Initial Process
             m_ImageDirty = true;
+        }
+        
+        // Handle pending crop operation (deferred from previous frame to avoid texture-in-use)
+        if (m_CropPending && m_RawTexture && m_Device && m_CommandQueue) {
+            m_CropPending = false;
             
-            // Compute Raw Histogram immediately for Auto Adjust
-            if (m_HistogramPSO && m_RawHistogramBuffer && m_RawTexture) {
+            NSUInteger texW = m_RawTexture.width;
+            NSUInteger texH = m_RawTexture.height;
+            
+            // Transform crop coordinates based on rotation
+            float rawCropRect[4]; // left, top, right, bottom in raw texture coords
+            
+            switch (m_PendingCropRotation) {
+                case 0:
+                default:
+                    rawCropRect[0] = m_PendingCropRect[0];
+                    rawCropRect[1] = m_PendingCropRect[1];
+                    rawCropRect[2] = m_PendingCropRect[2];
+                    rawCropRect[3] = m_PendingCropRect[3];
+                    break;
+                case 90:
+                    // 90° CW: view(x,y) -> raw(y, 1-x)
+                    rawCropRect[0] = m_PendingCropRect[1];
+                    rawCropRect[1] = 1.0f - m_PendingCropRect[2];
+                    rawCropRect[2] = m_PendingCropRect[3];
+                    rawCropRect[3] = 1.0f - m_PendingCropRect[0];
+                    break;
+                case 180:
+                    // 180°: view(x,y) -> raw(1-x, 1-y)
+                    rawCropRect[0] = 1.0f - m_PendingCropRect[2];
+                    rawCropRect[1] = 1.0f - m_PendingCropRect[3];
+                    rawCropRect[2] = 1.0f - m_PendingCropRect[0];
+                    rawCropRect[3] = 1.0f - m_PendingCropRect[1];
+                    break;
+                case 270:
+                    // 270° CW (90° CCW): view(x,y) -> raw(1-y, x)
+                    rawCropRect[0] = 1.0f - m_PendingCropRect[3];
+                    rawCropRect[1] = m_PendingCropRect[0];
+                    rawCropRect[2] = 1.0f - m_PendingCropRect[1];
+                    rawCropRect[3] = m_PendingCropRect[2];
+                    break;
+            }
+            
+            // Ensure rawCropRect is properly ordered (left < right, top < bottom)
+            if (rawCropRect[0] > rawCropRect[2]) {
+                float tmp = rawCropRect[0];
+                rawCropRect[0] = rawCropRect[2];
+                rawCropRect[2] = tmp;
+            }
+            if (rawCropRect[1] > rawCropRect[3]) {
+                float tmp = rawCropRect[1];
+                rawCropRect[1] = rawCropRect[3];
+                rawCropRect[3] = tmp;
+            }
+            
+            NSUInteger cropX = (NSUInteger)(rawCropRect[0] * texW);
+            NSUInteger cropY = (NSUInteger)(rawCropRect[1] * texH);
+            NSUInteger cropW = (NSUInteger)((rawCropRect[2] - rawCropRect[0]) * texW);
+            NSUInteger cropH = (NSUInteger)((rawCropRect[3] - rawCropRect[1]) * texH);
+            
+            // Clamp to texture bounds
+            if (cropX >= texW) cropX = texW - 1;
+            if (cropY >= texH) cropY = texH - 1;
+            if (cropX + cropW > texW) cropW = texW - cropX;
+            if (cropY + cropH > texH) cropH = texH - cropY;
+            
+            // Ensure minimum size
+            if (cropW < 1) cropW = 1;
+            if (cropH < 1) cropH = 1;
+            
+            // Create new cropped texture
+            MTLTextureDescriptor* newDesc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Unorm width:cropW height:cropH mipmapped:YES];
+            NSUInteger maxDim = (cropW > cropH) ? cropW : cropH;
+            NSUInteger mipLevels = 1 + (NSUInteger)floor(log2((double)maxDim));
+            newDesc.mipmapLevelCount = mipLevels;
+            newDesc.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+            id<MTLTexture> newRawTexture = [m_Device newTextureWithDescriptor:newDesc];
+            
+            if (newRawTexture) {
+                // Copy cropped region using blit encoder
                 id<MTLCommandBuffer> cb = [m_CommandQueue commandBuffer];
-                
-                // Clear Buffer
                 id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
-                [blit fillBuffer:m_RawHistogramBuffer range:NSMakeRange(0, 256 * sizeof(uint32_t)) value:0];
+                [blit copyFromTexture:m_RawTexture 
+                          sourceSlice:0 
+                          sourceLevel:0 
+                         sourceOrigin:MTLOriginMake(cropX, cropY, 0) 
+                           sourceSize:MTLSizeMake(cropW, cropH, 1) 
+                            toTexture:newRawTexture 
+                     destinationSlice:0 
+                     destinationLevel:0 
+                    destinationOrigin:MTLOriginMake(0, 0, 0)];
+                [blit generateMipmapsForTexture:newRawTexture];
                 [blit endEncoding];
+                [cb commit];
+                [cb waitUntilCompleted];
                 
-                // Compute
+                // Replace raw texture
+                m_RawTexture = newRawTexture;
+                
+                // Create new processed texture
+                MTLTextureDescriptor* targetDesc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:cropW height:cropH mipmapped:YES];
+                targetDesc.mipmapLevelCount = mipLevels;
+                targetDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+                m_ProcessedTexture = [m_Device newTextureWithDescriptor:targetDesc];
+                
+                m_ImageDirty = true;
+            }
+        }
+        
+        // Handle pending rotation operation (deferred from previous frame)
+        if (m_RotatePending && m_RawTexture && m_Device && m_CommandQueue && m_RotatePSO) {
+            m_RotatePending = false;
+            
+            float angleRad = m_PendingRotationAngle * (M_PI / 180.0f);
+            float cosA = cosf(angleRad);
+            float sinA = sinf(angleRad);
+            
+            NSUInteger srcW = m_RawTexture.width;
+            NSUInteger srcH = m_RawTexture.height;
+            float imgAspect = (float)srcW / (float)srcH;
+            
+            // Calculate scale factor to ensure rotated image covers original bounds
+            float absAngle = fabsf(angleRad);
+            float scaleFactorW = fabsf(cosA) + fabsf(sinA) / imgAspect;
+            float scaleFactorH = fabsf(cosA) + fabsf(sinA) * imgAspect;
+            float rotScale = fmaxf(scaleFactorW, scaleFactorH);
+            if (rotScale < 1.0f) rotScale = 1.0f;
+            
+            // Output texture has the same dimensions as input
+            NSUInteger dstW = srcW;
+            NSUInteger dstH = srcH;
+            
+            // Create new rotated texture
+            MTLTextureDescriptor* newDesc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Unorm width:dstW height:dstH mipmapped:YES];
+            NSUInteger maxDim = (dstW > dstH) ? dstW : dstH;
+            NSUInteger mipLevels = 1 + (NSUInteger)floor(log2((double)maxDim));
+            newDesc.mipmapLevelCount = mipLevels;
+            newDesc.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+            id<MTLTexture> newRawTexture = [m_Device newTextureWithDescriptor:newDesc];
+            
+            if (newRawTexture) {
+                // Create parameter buffer
+                struct RotateParams {
+                    float cosAngle;
+                    float sinAngle;
+                    float scale;
+                    uint32_t srcWidth;
+                    uint32_t srcHeight;
+                };
+                RotateParams params;
+                params.cosAngle = cosA;
+                params.sinAngle = sinA;
+                params.scale = rotScale;
+                params.srcWidth = (uint32_t)srcW;
+                params.srcHeight = (uint32_t)srcH;
+                
+                id<MTLCommandBuffer> cb = [m_CommandQueue commandBuffer];
                 id<MTLComputeCommandEncoder> ce = [cb computeCommandEncoder];
-                [ce setComputePipelineState:m_HistogramPSO];
-                [ce setTexture:m_RawTexture atIndex:0]; // Use Raw Texture
-                [ce setBuffer:m_RawHistogramBuffer offset:0 atIndex:0];
+                [ce setComputePipelineState:m_RotatePSO];
+                [ce setTexture:m_RawTexture atIndex:0];
+                [ce setTexture:newRawTexture atIndex:1];
+                [ce setBytes:&params length:sizeof(params) atIndex:0];
                 
-                NSUInteger w = m_RawTexture.width;
-                NSUInteger h = m_RawTexture.height;
                 MTLSize threadsPerThreadgroup = MTLSizeMake(16, 16, 1);
-                MTLSize threadgroups = MTLSizeMake((w + 15) / 16, (h + 15) / 16, 1);
-                
+                MTLSize threadgroups = MTLSizeMake((dstW + 15) / 16, (dstH + 15) / 16, 1);
                 [ce dispatchThreadgroups:threadgroups threadsPerThreadgroup:threadsPerThreadgroup];
                 [ce endEncoding];
                 
-                [cb commit];
-                [cb waitUntilCompleted]; // Wait so we can read it immediately
+                // Generate mipmaps
+                id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+                [blit generateMipmapsForTexture:newRawTexture];
+                [blit endEncoding];
                 
-                // Read back to CPU vector
-                uint32_t* ptr = (uint32_t*)[m_RawHistogramBuffer contents];
-                m_RawHistogram.assign(ptr, ptr + 256);
+                [cb commit];
+                [cb waitUntilCompleted];
+                
+                // Replace raw texture
+                m_RawTexture = newRawTexture;
+                
+                // Create new processed texture
+                MTLTextureDescriptor* targetDesc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:dstW height:dstH mipmapped:YES];
+                targetDesc.mipmapLevelCount = mipLevels;
+                targetDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+                m_ProcessedTexture = [m_Device newTextureWithDescriptor:targetDesc];
+                
+                m_ImageDirty = true;
             }
+        }
+            
+        // Compute Raw Histogram immediately for Auto Adjust
+        if (m_HistogramPSO && m_RawHistogramBuffer && m_RawTexture) {
+            id<MTLCommandBuffer> cb = [m_CommandQueue commandBuffer];
+            
+            // Clear Buffer
+            id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+            [blit fillBuffer:m_RawHistogramBuffer range:NSMakeRange(0, 256 * sizeof(uint32_t)) value:0];
+            [blit endEncoding];
+            
+            // Compute
+            id<MTLComputeCommandEncoder> ce = [cb computeCommandEncoder];
+            [ce setComputePipelineState:m_HistogramPSO];
+            [ce setTexture:m_RawTexture atIndex:0]; // Use Raw Texture
+            [ce setBuffer:m_RawHistogramBuffer offset:0 atIndex:0];
+            
+            NSUInteger w = m_RawTexture.width;
+            NSUInteger h = m_RawTexture.height;
+            MTLSize threadsPerThreadgroup = MTLSizeMake(16, 16, 1);
+            MTLSize threadgroups = MTLSizeMake((w + 15) / 16, (h + 15) / 16, 1);
+            
+            [ce dispatchThreadgroups:threadgroups threadsPerThreadgroup:threadsPerThreadgroup];
+            [ce endEncoding];
+            
+            [cb commit];
+            [cb waitUntilCompleted]; // Wait so we can read it immediately
+            
+            // Read back to CPU vector
+            uint32_t* ptr = (uint32_t*)[m_RawHistogramBuffer contents];
+            m_RawHistogram.assign(ptr, ptr + 256);
         }
         
         UpdateUniforms();

@@ -109,8 +109,23 @@ private:
     // View State
     float m_ViewZoom = 1.0f;
     float m_ViewOffset[2] = {0.0f, 0.0f};
+    int m_RotationAngle = 0; // 0, 90, 180, 270 degrees
     bool m_FirstLayout = true;
     bool m_ImageDirty = false; // Flag to trigger re-processing
+    
+    // Crop Mode State
+    bool m_CropMode = false;
+    int m_CropRatioIndex = 0; // 0 = Free, 1 = 1:1, 2 = 16:9, etc.
+    // Crop rectangle in normalized image coordinates (0.0 - 1.0)
+    float m_CropRect[4] = {0.0f, 0.0f, 1.0f, 1.0f}; // left, top, right, bottom
+    int m_CropDragCorner = -1; // -1 = none, 0-3 = corners (TL, TR, BR, BL), 4 = move whole rect
+    bool m_CropDragging = false;
+    
+    // Arbitrary Rotation State (activated by dragging on the rotate button)
+    float m_ArbitraryRotationAngle = 0.0f; // -90 to +90 degrees
+    bool m_ArbitraryRotateDragging = false;
+    float m_ArbitraryRotateDragStartX = 0.0f;
+    float m_ArbitraryRotateStartAngle = 0.0f;
     
     // Export State
     bool m_ShowExportOptions = false;
@@ -161,6 +176,7 @@ private:
     id<MTLRenderPipelineState> m_RenderPSO = nil;
     id<MTLComputePipelineState> m_HistogramPSO = nil;
     id<MTLComputePipelineState> m_Lanczos3PSO = nil;  // Lanczos3 downscale shader
+    id<MTLComputePipelineState> m_RotatePSO = nil;    // Rotation shader
     id<MTLTexture> m_RawTexture = nil;       // Source (Immutable)
     id<MTLTexture> m_ProcessedTexture = nil; // Destination (Render Target)
     
@@ -192,11 +208,28 @@ private:
     // Resize Dialog State
     int m_ResizeTargetWidth = 0;
     int m_ResizeTargetHeight = 0;
+    
+    // Pending Crop Operation (deferred to next frame to avoid texture-in-use issues)
+    bool m_CropPending = false;
+    float m_PendingCropRect[4] = {0.0f, 0.0f, 1.0f, 1.0f};
+    int m_PendingCropRotation = 0;
+    
+    // Pending Rotation Operation (deferred to next frame)
+    bool m_RotatePending = false;
+    float m_PendingRotationAngle = 0.0f; // degrees
 
-    id<MTLTexture> m_LogoTexture = nil;      // Logo
+    id<MTLTexture> m_LogoTexture = nil;
+    id<MTLTexture> m_RotateCWTexture = nil;
+    id<MTLTexture> m_RotateCCWTexture = nil;
+    id<MTLTexture> m_CropTexture = nil;
+    id<MTLTexture> m_CropRotateTexture = nil;
+    id<MTLTexture> m_FitScreenTexture = nil;
     id<MTLBuffer> m_HistogramBuffer = nil;
     id<MTLBuffer> m_HistogramBufferDisplay = nil; // Double buffering for display
     id<MTLSamplerState> m_TextureSampler = nil; // For linear filtering
     CAMetalLayer* m_MetalLayer = nil;
     MTLRenderPassDescriptor* m_RenderPassDescriptor = nil;
+    
+    // Asset loading helper
+    id<MTLTexture> LoadAssetTexture(const std::string& filename);
 };

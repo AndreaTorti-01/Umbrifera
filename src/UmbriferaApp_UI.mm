@@ -538,6 +538,7 @@ void UmbriferaApp::RenderUI() {
                 m_ViewZoom = 1.0f;
                 m_ViewOffset[0] = 0.0f;
                 m_ViewOffset[1] = 0.0f;
+                m_RotationAngle = 0;
                 
                 // Trigger reprocess
                 m_ImageDirty = true;
@@ -580,14 +581,20 @@ void UmbriferaApp::RenderUI() {
         m_ResetLayoutRequested = false;
     }
     
-    // Draw File Navigator
+    // Draw File Navigator (disabled in crop mode)
     if (m_FileNavigator) {
         if (m_LogoTexture) {
             m_FileNavigator->SetLogo(m_LogoTexture);
         }
+        if (m_CropMode) {
+            ImGui::BeginDisabled();
+        }
         m_FileNavigator->Render([this](std::string path) {
             LoadRawImage(path);
         });
+        if (m_CropMode) {
+            ImGui::EndDisabled();
+        }
     }
 
     // --- Center Window: Image Viewer ---
@@ -632,17 +639,21 @@ void UmbriferaApp::RenderUI() {
         bool isActive = ImGui::IsItemActive();
         
         // Calculate Fit Scale
-        float aspect = (float)m_ProcessedTexture.width / (float)m_ProcessedTexture.height;
-        float scaleX = availSize.x / (float)m_ProcessedTexture.width;
-        float scaleY = availSize.y / (float)m_ProcessedTexture.height;
+        // For 90/270 degree rotations, swap width and height for fitting
+        bool isRotated90or270 = (m_RotationAngle == 90 || m_RotationAngle == 270);
+        float imgW = isRotated90or270 ? (float)m_ProcessedTexture.height : (float)m_ProcessedTexture.width;
+        float imgH = isRotated90or270 ? (float)m_ProcessedTexture.width : (float)m_ProcessedTexture.height;
+        
+        float scaleX = availSize.x / imgW;
+        float scaleY = availSize.y / imgH;
         float fitScale = (scaleX < scaleY) ? scaleX : scaleY;
         
         // Calculate Final Scale
         float finalScale = fitScale * m_ViewZoom;
         
-        // Calculate Display Size
-        float dispW = m_ProcessedTexture.width * finalScale;
-        float dispH = m_ProcessedTexture.height * finalScale;
+        // Calculate Display Size (after rotation)
+        float dispW = imgW * finalScale;
+        float dispH = imgH * finalScale;
         
         // Calculate Center Position (Canvas Center + Offset)
         float centerX = cursorScreenPos.x + availSize.x * 0.5f + m_ViewOffset[0] * dispW;
@@ -651,16 +662,482 @@ void UmbriferaApp::RenderUI() {
         ImVec2 p_min = ImVec2(centerX - dispW * 0.5f, centerY - dispH * 0.5f);
         ImVec2 p_max = ImVec2(centerX + dispW * 0.5f, centerY + dispH * 0.5f);
         
-        // Draw Image with Clipping
+        // Draw Image with Clipping and Rotation using UV coordinates
         ImGui::PushClipRect(cursorScreenPos, ImVec2(cursorScreenPos.x + availSize.x, cursorScreenPos.y + availSize.y), true);
-        ImGui::GetWindowDrawList()->AddImage((ImTextureID)m_ProcessedTexture, p_min, p_max);
+        
+        // Define UV coordinates for each rotation
+        // 0°: TL(0,0), TR(1,0), BR(1,1), BL(0,1)
+        // 90° CW: TL(0,1), TR(0,0), BR(1,0), BL(1,1)
+        // 180°: TL(1,1), TR(0,1), BR(0,0), BL(1,0)
+        // 270° CW: TL(1,0), TR(1,1), BR(0,1), BL(0,0)
+        ImVec2 uv_tl, uv_tr, uv_br, uv_bl;
+        switch (m_RotationAngle) {
+            case 0:
+            default:
+                uv_tl = ImVec2(0, 0); uv_tr = ImVec2(1, 0); uv_br = ImVec2(1, 1); uv_bl = ImVec2(0, 1);
+                break;
+            case 90:
+                uv_tl = ImVec2(0, 1); uv_tr = ImVec2(0, 0); uv_br = ImVec2(1, 0); uv_bl = ImVec2(1, 1);
+                break;
+            case 180:
+                uv_tl = ImVec2(1, 1); uv_tr = ImVec2(0, 1); uv_br = ImVec2(0, 0); uv_bl = ImVec2(1, 0);
+                break;
+            case 270:
+                uv_tl = ImVec2(1, 0); uv_tr = ImVec2(1, 1); uv_br = ImVec2(0, 1); uv_bl = ImVec2(0, 0);
+                break;
+        }
+        
+        // Quad corners: top-left, top-right, bottom-right, bottom-left
+        ImVec2 p_tl = p_min;
+        ImVec2 p_tr = ImVec2(p_max.x, p_min.y);
+        ImVec2 p_br = p_max;
+        ImVec2 p_bl = ImVec2(p_min.x, p_max.y);
+        
+        // Apply arbitrary rotation while dragging
+        if (m_ArbitraryRotateDragging && fabsf(m_ArbitraryRotationAngle) > 0.001f) {
+            float angleRad = m_ArbitraryRotationAngle * (M_PI / 180.0f);
+            float cosA = cosf(angleRad);
+            float sinA = sinf(angleRad);
+            
+            // Calculate scale to cover the original bounds when rotated
+            float absAngle = fabsf(angleRad);
+            float imgAspect = imgW / imgH;
+            float scaleFactorW = cosA + fabsf(sinA) / imgAspect;
+            float scaleFactorH = cosA + fabsf(sinA) * imgAspect;
+            float rotScale = fmaxf(scaleFactorW, scaleFactorH);
+            if (rotScale < 1.0f) rotScale = 1.0f;
+            
+            // Scale up the display size
+            float rotDispW = dispW * rotScale;
+            float rotDispH = dispH * rotScale;
+            
+            // Rotate around center
+            auto rotatePoint = [&](ImVec2 p) -> ImVec2 {
+                float dx = p.x - centerX;
+                float dy = p.y - centerY;
+                float rx = dx * cosA - dy * sinA;
+                float ry = dx * sinA + dy * cosA;
+                return ImVec2(centerX + rx, centerY + ry);
+            };
+            
+            // Recalculate corners with scaled size, then rotate
+            float halfW = rotDispW * 0.5f;
+            float halfH = rotDispH * 0.5f;
+            p_tl = rotatePoint(ImVec2(centerX - halfW, centerY - halfH));
+            p_tr = rotatePoint(ImVec2(centerX + halfW, centerY - halfH));
+            p_br = rotatePoint(ImVec2(centerX + halfW, centerY + halfH));
+            p_bl = rotatePoint(ImVec2(centerX - halfW, centerY + halfH));
+        }
+        
+        ImGui::GetWindowDrawList()->AddImageQuad(
+            (ImTextureID)m_ProcessedTexture,
+            p_tl, p_tr, p_br, p_bl,
+            uv_tl, uv_tr, uv_br, uv_bl
+        );
+        
+        // Crop Mode Overlay
+        if (m_CropMode) {
+            ImGuiIO& io = ImGui::GetIO();
+            ImDrawList* drawList = ImGui::GetWindowDrawList();
+            
+            // Calculate crop rectangle in screen coordinates
+            float cropLeft = p_min.x + m_CropRect[0] * dispW;
+            float cropTop = p_min.y + m_CropRect[1] * dispH;
+            float cropRight = p_min.x + m_CropRect[2] * dispW;
+            float cropBottom = p_min.y + m_CropRect[3] * dispH;
+            
+            ImVec2 cropMin = ImVec2(cropLeft, cropTop);
+            ImVec2 cropMax = ImVec2(cropRight, cropBottom);
+            
+            // Darken areas outside crop
+            ImU32 darkColor = IM_COL32(0, 0, 0, (int)(255 * UIConfig::CROP_OVERLAY_ALPHA));
+            // Top strip
+            drawList->AddRectFilled(p_min, ImVec2(p_max.x, cropTop), darkColor);
+            // Bottom strip
+            drawList->AddRectFilled(ImVec2(p_min.x, cropBottom), p_max, darkColor);
+            // Left strip
+            drawList->AddRectFilled(ImVec2(p_min.x, cropTop), ImVec2(cropLeft, cropBottom), darkColor);
+            // Right strip
+            drawList->AddRectFilled(ImVec2(cropRight, cropTop), ImVec2(p_max.x, cropBottom), darkColor);
+            
+            // Draw crop border
+            drawList->AddRect(cropMin, cropMax, IM_COL32(255, 255, 255, 255), 0.0f, 0, 2.0f);
+            
+            // Draw rule of thirds grid
+            float thirdW = (cropRight - cropLeft) / 3.0f;
+            float thirdH = (cropBottom - cropTop) / 3.0f;
+            ImU32 gridColor = IM_COL32(255, 255, 255, 128);
+            // Vertical lines
+            drawList->AddLine(ImVec2(cropLeft + thirdW, cropTop), ImVec2(cropLeft + thirdW, cropBottom), gridColor);
+            drawList->AddLine(ImVec2(cropLeft + 2*thirdW, cropTop), ImVec2(cropLeft + 2*thirdW, cropBottom), gridColor);
+            // Horizontal lines
+            drawList->AddLine(ImVec2(cropLeft, cropTop + thirdH), ImVec2(cropRight, cropTop + thirdH), gridColor);
+            drawList->AddLine(ImVec2(cropLeft, cropTop + 2*thirdH), ImVec2(cropRight, cropTop + 2*thirdH), gridColor);
+            
+            // Draw corner circles
+            float cornerRadius = UIConfig::CROP_CORNER_RADIUS;
+            ImVec2 corners[4] = {cropMin, ImVec2(cropMax.x, cropMin.y), cropMax, ImVec2(cropMin.x, cropMax.y)};
+            for (int i = 0; i < 4; i++) {
+                drawList->AddCircleFilled(corners[i], cornerRadius, IM_COL32(255, 255, 255, 255));
+                drawList->AddCircle(corners[i], cornerRadius, IM_COL32(0, 0, 0, 255), 0, 2.0f);
+            }
+            
+            // Handle crop interaction
+            ImVec2 mousePos = io.MousePos;
+            float hitRadius = UIConfig::CROP_CORNER_HIT_RADIUS;
+            
+            // Check if mouse is over a corner
+            int hoveredCorner = -1;
+            for (int i = 0; i < 4; i++) {
+                float dx = mousePos.x - corners[i].x;
+                float dy = mousePos.y - corners[i].y;
+                if (dx*dx + dy*dy < hitRadius*hitRadius) {
+                    hoveredCorner = i;
+                    break;
+                }
+            }
+            
+            // Check if mouse is inside crop rect (for moving)
+            bool insideCropRect = mousePos.x >= cropLeft && mousePos.x <= cropRight &&
+                                  mousePos.y >= cropTop && mousePos.y <= cropBottom;
+            
+            // Handle mouse press
+            if (isHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                if (hoveredCorner >= 0) {
+                    m_CropDragCorner = hoveredCorner;
+                    m_CropDragging = true;
+                } else if (insideCropRect) {
+                    m_CropDragCorner = 4; // Move whole rect
+                    m_CropDragging = true;
+                }
+            }
+            
+            // Handle mouse release
+            if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                m_CropDragging = false;
+                m_CropDragCorner = -1;
+            }
+            
+            // Handle dragging
+            if (m_CropDragging && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+                ImVec2 delta = io.MouseDelta;
+                float deltaX = delta.x / dispW;
+                float deltaY = delta.y / dispH;
+                
+                // Get current aspect ratio constraint
+                float aspectRatio = 0.0f; // 0 = free
+                static const float ratios[] = {0.0f, 1.0f, 16.0f/9.0f, 9.0f/16.0f, 21.0f/9.0f, 9.0f/21.0f, 
+                                               3.0f/2.0f, 2.0f/3.0f, 4.0f/3.0f, 3.0f/4.0f, 
+                                               5.0f/4.0f, 4.0f/5.0f, 7.0f/5.0f, 5.0f/7.0f};
+                if (m_CropRatioIndex > 0 && m_CropRatioIndex < 14) {
+                    aspectRatio = ratios[m_CropRatioIndex];
+                }
+                
+                if (m_CropDragCorner == 4) {
+                    // Move whole rect
+                    float rectW = m_CropRect[2] - m_CropRect[0];
+                    float rectH = m_CropRect[3] - m_CropRect[1];
+                    
+                    m_CropRect[0] += deltaX;
+                    m_CropRect[1] += deltaY;
+                    m_CropRect[2] += deltaX;
+                    m_CropRect[3] += deltaY;
+                    
+                    // Clamp to image bounds
+                    if (m_CropRect[0] < 0.0f) { m_CropRect[0] = 0.0f; m_CropRect[2] = rectW; }
+                    if (m_CropRect[1] < 0.0f) { m_CropRect[1] = 0.0f; m_CropRect[3] = rectH; }
+                    if (m_CropRect[2] > 1.0f) { m_CropRect[2] = 1.0f; m_CropRect[0] = 1.0f - rectW; }
+                    if (m_CropRect[3] > 1.0f) { m_CropRect[3] = 1.0f; m_CropRect[1] = 1.0f - rectH; }
+                } else {
+                    // Resize from corner
+                    int corner = m_CropDragCorner;
+                    
+                    if (aspectRatio > 0.0f) {
+                        // Constrained resize - keep opposite corner fixed
+                        // Convert aspect ratio to normalized coordinates
+                        // aspectRatio is width/height in pixels, we need to account for image dimensions
+                        float imgAspect = imgW / imgH; // Actual image aspect ratio
+                        float normAspectRatio = aspectRatio / imgAspect; // Aspect ratio in normalized coords
+                        
+                        // Get the fixed corner (opposite to dragged)
+                        float fixedX, fixedY;
+                        switch (corner) {
+                            case 0: // Dragging TL, fixed BR
+                                fixedX = m_CropRect[2];
+                                fixedY = m_CropRect[3];
+                                break;
+                            case 1: // Dragging TR, fixed BL
+                                fixedX = m_CropRect[0];
+                                fixedY = m_CropRect[3];
+                                break;
+                            case 2: // Dragging BR, fixed TL
+                                fixedX = m_CropRect[0];
+                                fixedY = m_CropRect[1];
+                                break;
+                            case 3: // Dragging BL, fixed TR
+                            default:
+                                fixedX = m_CropRect[2];
+                                fixedY = m_CropRect[1];
+                                break;
+                        }
+                        
+                        // Calculate new dragged corner position
+                        float dragX, dragY;
+                        switch (corner) {
+                            case 0: dragX = m_CropRect[0] + deltaX; dragY = m_CropRect[1] + deltaY; break;
+                            case 1: dragX = m_CropRect[2] + deltaX; dragY = m_CropRect[1] + deltaY; break;
+                            case 2: dragX = m_CropRect[2] + deltaX; dragY = m_CropRect[3] + deltaY; break;
+                            case 3: default: dragX = m_CropRect[0] + deltaX; dragY = m_CropRect[3] + deltaY; break;
+                        }
+                        
+                        // Determine new width and height from fixed to dragged corner
+                        float newW = fabsf(dragX - fixedX);
+                        float newH = fabsf(dragY - fixedY);
+                        
+                        // Constrain to aspect ratio - use the dimension that gives larger area
+                        float hFromW = newW / normAspectRatio;
+                        float wFromH = newH * normAspectRatio;
+                        
+                        if (wFromH <= newW) {
+                            // Width is limiting, adjust height
+                            newH = hFromW;
+                        } else {
+                            // Height is limiting, adjust width
+                            newW = wFromH;
+                        }
+                        
+                        // Enforce minimum size
+                        if (newW < 0.05f) { newW = 0.05f; newH = newW / normAspectRatio; }
+                        if (newH < 0.05f) { newH = 0.05f; newW = newH * normAspectRatio; }
+                        
+                        // Calculate new rect based on fixed corner and new dimensions
+                        float newLeft, newTop, newRight, newBottom;
+                        switch (corner) {
+                            case 0: // Fixed BR
+                                newRight = fixedX;
+                                newBottom = fixedY;
+                                newLeft = newRight - newW;
+                                newTop = newBottom - newH;
+                                break;
+                            case 1: // Fixed BL
+                                newLeft = fixedX;
+                                newBottom = fixedY;
+                                newRight = newLeft + newW;
+                                newTop = newBottom - newH;
+                                break;
+                            case 2: // Fixed TL
+                                newLeft = fixedX;
+                                newTop = fixedY;
+                                newRight = newLeft + newW;
+                                newBottom = newTop + newH;
+                                break;
+                            case 3: // Fixed TR
+                            default:
+                                newRight = fixedX;
+                                newTop = fixedY;
+                                newLeft = newRight - newW;
+                                newBottom = newTop + newH;
+                                break;
+                        }
+                        
+                        // Clamp to image bounds while maintaining aspect ratio
+                        if (newLeft < 0.0f) {
+                            newLeft = 0.0f;
+                            newW = (corner == 1 || corner == 2) ? (fixedX - newLeft) : newW;
+                            if (corner == 0 || corner == 3) { newRight = newLeft + newW; }
+                            newH = newW / normAspectRatio;
+                            if (corner == 0 || corner == 1) newTop = newBottom - newH;
+                            else newBottom = newTop + newH;
+                        }
+                        if (newTop < 0.0f) {
+                            newTop = 0.0f;
+                            newH = (corner == 2 || corner == 3) ? (fixedY - newTop) : newH;
+                            if (corner == 0 || corner == 1) { newBottom = newTop + newH; }
+                            newW = newH * normAspectRatio;
+                            if (corner == 0 || corner == 3) newLeft = newRight - newW;
+                            else newRight = newLeft + newW;
+                        }
+                        if (newRight > 1.0f) {
+                            newRight = 1.0f;
+                            newW = (corner == 0 || corner == 3) ? (newRight - fixedX) : (newRight - newLeft);
+                            if (corner == 1 || corner == 2) { newLeft = newRight - newW; }
+                            newH = newW / normAspectRatio;
+                            if (corner == 0 || corner == 1) newTop = newBottom - newH;
+                            else newBottom = newTop + newH;
+                        }
+                        if (newBottom > 1.0f) {
+                            newBottom = 1.0f;
+                            newH = (corner == 0 || corner == 1) ? (newBottom - fixedY) : (newBottom - newTop);
+                            if (corner == 2 || corner == 3) { newTop = newBottom - newH; }
+                            newW = newH * normAspectRatio;
+                            if (corner == 0 || corner == 3) newLeft = newRight - newW;
+                            else newRight = newLeft + newW;
+                        }
+                        
+                        // Final clamp
+                        if (newLeft < 0.0f) newLeft = 0.0f;
+                        if (newTop < 0.0f) newTop = 0.0f;
+                        if (newRight > 1.0f) newRight = 1.0f;
+                        if (newBottom > 1.0f) newBottom = 1.0f;
+                        
+                        m_CropRect[0] = newLeft;
+                        m_CropRect[1] = newTop;
+                        m_CropRect[2] = newRight;
+                        m_CropRect[3] = newBottom;
+                    } else {
+                        // Free resize
+                        switch (corner) {
+                            case 0: // Top-left
+                                m_CropRect[0] += deltaX;
+                                m_CropRect[1] += deltaY;
+                                break;
+                            case 1: // Top-right
+                                m_CropRect[2] += deltaX;
+                                m_CropRect[1] += deltaY;
+                                break;
+                            case 2: // Bottom-right
+                                m_CropRect[2] += deltaX;
+                                m_CropRect[3] += deltaY;
+                                break;
+                            case 3: // Bottom-left
+                                m_CropRect[0] += deltaX;
+                                m_CropRect[3] += deltaY;
+                                break;
+                        }
+                        
+                        // Clamp to image bounds
+                        if (m_CropRect[0] < 0.0f) m_CropRect[0] = 0.0f;
+                        if (m_CropRect[1] < 0.0f) m_CropRect[1] = 0.0f;
+                        if (m_CropRect[2] > 1.0f) m_CropRect[2] = 1.0f;
+                        if (m_CropRect[3] > 1.0f) m_CropRect[3] = 1.0f;
+                        
+                        // Enforce minimum size
+                        if (m_CropRect[2] - m_CropRect[0] < 0.05f) {
+                            if (corner == 0 || corner == 3) m_CropRect[0] = m_CropRect[2] - 0.05f;
+                            else m_CropRect[2] = m_CropRect[0] + 0.05f;
+                        }
+                        if (m_CropRect[3] - m_CropRect[1] < 0.05f) {
+                            if (corner == 0 || corner == 1) m_CropRect[1] = m_CropRect[3] - 0.05f;
+                            else m_CropRect[3] = m_CropRect[1] + 0.05f;
+                        }
+                    }
+                }
+            }
+            
+            // Set cursor based on what's being hovered/dragged
+            if (hoveredCorner >= 0 || (m_CropDragging && m_CropDragCorner >= 0 && m_CropDragCorner < 4)) {
+                ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+            } else if (insideCropRect || (m_CropDragging && m_CropDragCorner == 4)) {
+                ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            }
+        }
+        
+        // Arbitrary Rotation Overlay (active while dragging on the rotate button)
+        if (m_ArbitraryRotateDragging) {
+            ImGuiIO& io = ImGui::GetIO();
+            ImDrawList* drawList = ImGui::GetWindowDrawList();
+            
+            // Calculate the rotation angle in radians
+            float angleRad = m_ArbitraryRotationAngle * (M_PI / 180.0f);
+            float cosA = cosf(angleRad);
+            float sinA = sinf(angleRad);
+            
+            // Calculate required scale to fill the crop area when rotated
+            float imgAspect = imgW / imgH;
+            
+            // Scale factor to ensure the rotated image covers the original bounds
+            float scaleFactorW = cosA + fabsf(sinA) / imgAspect;
+            float scaleFactorH = cosA + fabsf(sinA) * imgAspect;
+            float rotScale = fmaxf(scaleFactorW, scaleFactorH);
+            if (rotScale < 1.0f) rotScale = 1.0f;
+            
+            // Apply rotation scale to display
+            float rotDispW = dispW * rotScale;
+            float rotDispH = dispH * rotScale;
+            
+            // Rotate point helper
+            auto rotatePoint = [&](float x, float y) -> ImVec2 {
+                float dx = x - centerX;
+                float dy = y - centerY;
+                float rx = dx * cosA - dy * sinA;
+                float ry = dx * sinA + dy * cosA;
+                return ImVec2(centerX + rx, centerY + ry);
+            };
+            
+            // Calculate the rotated quad corners
+            ImVec2 half = ImVec2(rotDispW * 0.5f, rotDispH * 0.5f);
+            ImVec2 rot_p_tl = rotatePoint(centerX - half.x, centerY - half.y);
+            ImVec2 rot_p_tr = rotatePoint(centerX + half.x, centerY - half.y);
+            ImVec2 rot_p_br = rotatePoint(centerX + half.x, centerY + half.y);
+            ImVec2 rot_p_bl = rotatePoint(centerX - half.x, centerY + half.y);
+            
+            // Darken areas outside the original image bounds
+            ImU32 darkColor = IM_COL32(0, 0, 0, (int)(255 * UIConfig::CROP_OVERLAY_ALPHA));
+            
+            // Draw darkened strips around the original image bounds
+            drawList->AddRectFilled(cursorScreenPos, ImVec2(cursorScreenPos.x + availSize.x, p_min.y), darkColor);
+            drawList->AddRectFilled(ImVec2(cursorScreenPos.x, p_max.y), ImVec2(cursorScreenPos.x + availSize.x, cursorScreenPos.y + availSize.y), darkColor);
+            drawList->AddRectFilled(ImVec2(cursorScreenPos.x, p_min.y), ImVec2(p_min.x, p_max.y), darkColor);
+            drawList->AddRectFilled(ImVec2(p_max.x, p_min.y), ImVec2(cursorScreenPos.x + availSize.x, p_max.y), darkColor);
+            
+            // Draw crop area border
+            drawList->AddRect(p_min, p_max, IM_COL32(255, 255, 255, 255), 0.0f, 0, 2.0f);
+            
+            // Draw dense grid inside the crop area
+            float gridSpacing = UIConfig::ROTATE_GRID_SPACING;
+            int majorEvery = UIConfig::ROTATE_GRID_MAJOR_EVERY;
+            ImU32 gridColorMinor = IM_COL32(255, 255, 255, 60);
+            ImU32 gridColorMajor = IM_COL32(255, 255, 255, 140);
+            
+            // Vertical lines
+            int lineIndex = 0;
+            for (float x = p_min.x; x <= p_max.x; x += gridSpacing) {
+                ImU32 color = (lineIndex % majorEvery == 0) ? gridColorMajor : gridColorMinor;
+                float thickness = (lineIndex % majorEvery == 0) ? 1.5f : 1.0f;
+                drawList->AddLine(ImVec2(x, p_min.y), ImVec2(x, p_max.y), color, thickness);
+                lineIndex++;
+            }
+            
+            // Horizontal lines
+            lineIndex = 0;
+            for (float y = p_min.y; y <= p_max.y; y += gridSpacing) {
+                ImU32 color = (lineIndex % majorEvery == 0) ? gridColorMajor : gridColorMinor;
+                float thickness = (lineIndex % majorEvery == 0) ? 1.5f : 1.0f;
+                drawList->AddLine(ImVec2(p_min.x, y), ImVec2(p_max.x, y), color, thickness);
+                lineIndex++;
+            }
+            
+            // Handle dragging - update angle based on mouse movement
+            ImVec2 mousePos = io.MousePos;
+            
+            if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                float deltaX = mousePos.x - m_ArbitraryRotateDragStartX;
+                m_ArbitraryRotationAngle = m_ArbitraryRotateStartAngle + deltaX * UIConfig::ROTATE_SENSITIVITY;
+                
+                if (m_ArbitraryRotationAngle > UIConfig::ROTATE_MAX_ANGLE) 
+                    m_ArbitraryRotationAngle = UIConfig::ROTATE_MAX_ANGLE;
+                if (m_ArbitraryRotationAngle < -UIConfig::ROTATE_MAX_ANGLE) 
+                    m_ArbitraryRotationAngle = -UIConfig::ROTATE_MAX_ANGLE;
+                
+                ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+            } else {
+                m_ArbitraryRotateDragging = false;
+                
+                if (fabsf(m_ArbitraryRotationAngle) > 0.01f) {
+                    m_RotatePending = true;
+                    m_PendingRotationAngle = m_ArbitraryRotationAngle;
+                }
+                m_ArbitraryRotationAngle = 0.0f;
+            }
+        }
+        
         ImGui::PopClipRect();
         
         // Handle Input
         ImGuiIO& io = ImGui::GetIO();
         
-        // Zoom
-        if (isHovered && io.MouseWheel != 0.0f) {
+        // Zoom (disabled in crop mode or while rotating)
+        if (!m_CropMode && !m_ArbitraryRotateDragging && isHovered && io.MouseWheel != 0.0f) {
             float zoomSpeed = 0.1f;
             float oldZoom = m_ViewZoom;
             float newZoom = oldZoom + io.MouseWheel * zoomSpeed * oldZoom;
@@ -679,8 +1156,8 @@ void UmbriferaApp::RenderUI() {
             float canvasCenterX = cursorScreenPos.x + availSize.x * 0.5f;
             float canvasCenterY = cursorScreenPos.y + availSize.y * 0.5f;
             
-            float newDispW = m_ProcessedTexture.width * fitScale * newZoom;
-            float newDispH = m_ProcessedTexture.height * fitScale * newZoom;
+            float newDispW = imgW * fitScale * newZoom;
+            float newDispH = imgH * fitScale * newZoom;
             
             m_ViewOffset[0] = (newCenterX - canvasCenterX) / newDispW;
             m_ViewOffset[1] = (newCenterY - canvasCenterY) / newDispH;
@@ -688,8 +1165,13 @@ void UmbriferaApp::RenderUI() {
             m_ViewZoom = newZoom;
         }
         
-        // Pan
-        if (isActive && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+        // Pan (only when not in crop mode or rotating, and not dragging crop elements)
+        if (!m_CropMode && !m_ArbitraryRotateDragging && isActive && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+            ImVec2 delta = io.MouseDelta;
+            m_ViewOffset[0] += delta.x / dispW;
+            m_ViewOffset[1] += delta.y / dispH;
+        } else if (m_CropMode && isActive && ImGui::IsMouseDragging(ImGuiMouseButton_Left) && !m_CropDragging) {
+            // In crop mode, pan only if not dragging crop elements
             ImVec2 delta = io.MouseDelta;
             m_ViewOffset[0] += delta.x / dispW;
             m_ViewOffset[1] += delta.y / dispH;
@@ -709,23 +1191,136 @@ void UmbriferaApp::RenderUI() {
         
         // Vertically center buttons in the row
         float btnY = btnRowMin.y + (buttonBarHeight - ImGui::GetFrameHeight()) * 0.5f;
+        float iconSize = ImGui::GetFrameHeight() - 4.0f; // Slightly smaller than frame for padding
+        float iconBtnY = btnRowMin.y + (buttonBarHeight - iconSize - 8.0f) * 0.5f; // Center icon buttons
+        float btnMargin = UIConfig::MARGIN;
+        float btnGap = UIConfig::GAP_SMALL;
         
-        // Reset View (Centered in Window)
-        const char* resetLabel = "Reset View";
-        float resetWidth = ImGui::CalcTextSize(resetLabel).x + 20.0f; // Standard padding
-        ImGui::SetCursorScreenPos(ImVec2(winPos.x + (winSize.x - resetWidth) * 0.5f, btnY));
-        if (ImGui::Button(resetLabel, ImVec2(resetWidth, 0))) {
-            m_ViewZoom = 1.0f;
-            m_ViewOffset[0] = 0.0f;
-            m_ViewOffset[1] = 0.0f;
-        }
-        
-        // Crop (Right Aligned with margin)
-        const char* cropLabel = "Crop";
-        float cropWidth = ImGui::CalcTextSize(cropLabel).x + 20.0f;
-        ImGui::SetCursorScreenPos(ImVec2(winPos.x + winSize.x - cropWidth - 20.0f, btnY));
-        if (ImGui::Button(cropLabel, ImVec2(cropWidth, 0))) {
-            // TODO: Implement crop functionality
+        if (!m_CropMode && !m_ArbitraryRotateDragging) {
+            float leftBtnX = winPos.x + btnMargin;
+            
+            // LEFT: Crop button
+            if (m_CropTexture) {
+                ImGui::SetCursorScreenPos(ImVec2(leftBtnX, iconBtnY));
+                if (ImGui::ImageButton("##CropBtn", (ImTextureID)m_CropTexture, ImVec2(iconSize, iconSize))) {
+                    m_CropMode = true;
+                    m_CropRatioIndex = 0;
+                    m_CropRect[0] = 0.0f; m_CropRect[1] = 0.0f;
+                    m_CropRect[2] = 1.0f; m_CropRect[3] = 1.0f;
+                    m_ViewZoom = 1.0f;
+                    m_ViewOffset[0] = 0.0f;
+                    m_ViewOffset[1] = 0.0f;
+                }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Crop");
+                leftBtnX += iconSize + 8.0f + btnGap;
+            }
+            
+            // LEFT: Rotate Counter-Clockwise
+            if (m_RotateCCWTexture) {
+                ImGui::SetCursorScreenPos(ImVec2(leftBtnX, iconBtnY));
+                if (ImGui::ImageButton("##RotateCCW", (ImTextureID)m_RotateCCWTexture, ImVec2(iconSize, iconSize))) {
+                    m_RotationAngle = (m_RotationAngle + 270) % 360;
+                    m_ViewZoom = 1.0f;
+                    m_ViewOffset[0] = 0.0f;
+                    m_ViewOffset[1] = 0.0f;
+                }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Rotate 90° Counter-Clockwise");
+                leftBtnX += iconSize + 8.0f + btnGap;
+            }
+            
+            // LEFT: Rotate Clockwise
+            if (m_RotateCWTexture) {
+                ImGui::SetCursorScreenPos(ImVec2(leftBtnX, iconBtnY));
+                if (ImGui::ImageButton("##RotateCW", (ImTextureID)m_RotateCWTexture, ImVec2(iconSize, iconSize))) {
+                    m_RotationAngle = (m_RotationAngle + 90) % 360;
+                    m_ViewZoom = 1.0f;
+                    m_ViewOffset[0] = 0.0f;
+                    m_ViewOffset[1] = 0.0f;
+                }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Rotate 90° Clockwise");
+            }
+            
+            // CENTER: Straighten button (drag to rotate)
+            if (m_CropRotateTexture) {
+                float btnPadding = 12.0f;
+                float straightenBtnWidth = iconSize + 2.0f * btnPadding;
+                float centerBtnX = winPos.x + (winSize.x - straightenBtnWidth) * 0.5f;
+                ImGui::SetCursorScreenPos(ImVec2(centerBtnX, iconBtnY));
+                ImGui::Button("", ImVec2(straightenBtnWidth, iconSize + 8.0f));
+                ImVec2 btnMin = ImGui::GetItemRectMin();
+                ImVec2 btnMax = ImGui::GetItemRectMax();
+                float btnCenterX = (btnMin.x + btnMax.x) * 0.5f;
+                float btnCenterY = (btnMin.y + btnMax.y) * 0.5f;
+                ImVec2 iconPos = ImVec2(btnCenterX - iconSize * 0.5f, btnCenterY - iconSize * 0.5f);
+                ImGui::GetWindowDrawList()->AddImage((ImTextureID)m_CropRotateTexture, iconPos, ImVec2(iconPos.x + iconSize, iconPos.y + iconSize));
+                
+                if (ImGui::IsItemActive() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                    m_ArbitraryRotateDragging = true;
+                    m_ArbitraryRotateDragStartX = ImGui::GetIO().MousePos.x;
+                    m_ArbitraryRotationAngle = 0.0f;
+                    m_ArbitraryRotateStartAngle = 0.0f;
+                    m_ViewZoom = 1.0f;
+                    m_ViewOffset[0] = 0.0f;
+                    m_ViewOffset[1] = 0.0f;
+                }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Straighten (drag left/right)");
+            }
+            
+            // RIGHT: Fit Screen button
+            if (m_FitScreenTexture) {
+                float rightBtnX = winPos.x + winSize.x - btnMargin - iconSize - 8.0f;
+                ImGui::SetCursorScreenPos(ImVec2(rightBtnX, iconBtnY));
+                if (ImGui::ImageButton("##FitScreen", (ImTextureID)m_FitScreenTexture, ImVec2(iconSize, iconSize))) {
+                    m_ViewZoom = 1.0f;
+                    m_ViewOffset[0] = 0.0f;
+                    m_ViewOffset[1] = 0.0f;
+                }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Fit to Screen");
+            }
+        } else if (m_ArbitraryRotateDragging) {
+            // While dragging to rotate, show the angle in center
+            char angleText[32];
+            snprintf(angleText, sizeof(angleText), "%.1f°", m_ArbitraryRotationAngle);
+            float angleWidth = ImGui::CalcTextSize(angleText).x;
+            ImGui::SetCursorScreenPos(ImVec2(winPos.x + (winSize.x - angleWidth) * 0.5f, btnY + (ImGui::GetFrameHeight() - ImGui::GetTextLineHeight()) * 0.5f));
+            ImGui::Text("%s", angleText);
+        } else if (m_CropMode) {
+            const char* cancelLabel = "Cancel";
+            const char* applyCropLabel = "Crop";
+            float cancelWidth = ImGui::CalcTextSize(cancelLabel).x + 20.0f;
+            float applyCropWidth = ImGui::CalcTextSize(applyCropLabel).x + 20.0f;
+            float totalButtonsWidth = cancelWidth + applyCropWidth + btnGap;
+            float centerX = winPos.x + (winSize.x - totalButtonsWidth) * 0.5f;
+            
+            // Crop button
+            ImGui::SetCursorScreenPos(ImVec2(centerX + cancelWidth + btnGap, btnY));
+            if (ImGui::Button(applyCropLabel, ImVec2(applyCropWidth, 0))) {
+                if (m_RawTexture && m_Device && m_CommandQueue) {
+                    m_CropPending = true;
+                    m_PendingCropRect[0] = m_CropRect[0];
+                    m_PendingCropRect[1] = m_CropRect[1];
+                    m_PendingCropRect[2] = m_CropRect[2];
+                    m_PendingCropRect[3] = m_CropRect[3];
+                    m_PendingCropRotation = m_RotationAngle;
+                }
+                
+                m_CropMode = false;
+                m_CropRatioIndex = 0;
+                m_CropRect[0] = 0.0f; m_CropRect[1] = 0.0f;
+                m_CropRect[2] = 1.0f; m_CropRect[3] = 1.0f;
+                m_ViewZoom = 1.0f;
+                m_ViewOffset[0] = 0.0f;
+                m_ViewOffset[1] = 0.0f;
+                m_RotationAngle = 0;
+            }
+            
+            // Cancel button
+            ImGui::SetCursorScreenPos(ImVec2(centerX, btnY));
+            if (ImGui::Button(cancelLabel, ImVec2(cancelWidth, 0))) {
+                m_CropMode = false;
+                m_CropRect[0] = 0.0f; m_CropRect[1] = 0.0f;
+                m_CropRect[2] = 1.0f; m_CropRect[3] = 1.0f;
+            }
         }
         
     } else {
@@ -768,9 +1363,100 @@ void UmbriferaApp::RenderUI() {
     // Top Margin
     UI_GapSmall();
 
-    // Histogram Display
-    // Read back histogram data from GPU buffer (Use Display buffer which is stable)
-    if (m_HistogramBufferDisplay) {
+    // Crop Mode: Show aspect ratio buttons instead of normal controls
+    if (m_CropMode) {
+        UI_Header("Crop Aspect Ratio");
+        UI_GapSmall();
+        
+        // Aspect ratio options
+        struct AspectRatio {
+            const char* label;
+            float ratio; // width / height, 0 = free
+        };
+        
+        static const AspectRatio ratios[] = {
+            {"Free", 0.0f},
+            {"1:1", 1.0f},
+            {"16:9", 16.0f/9.0f},
+            {"9:16", 9.0f/16.0f},
+            {"21:9", 21.0f/9.0f},
+            {"9:21", 9.0f/21.0f},
+            {"3:2", 3.0f/2.0f},
+            {"2:3", 2.0f/3.0f},
+            {"4:3", 4.0f/3.0f},
+            {"3:4", 3.0f/4.0f},
+            {"5:4", 5.0f/4.0f},
+            {"4:5", 4.0f/5.0f},
+            {"7:5", 7.0f/5.0f},
+            {"5:7", 5.0f/7.0f}
+        };
+        
+        float availWidth = ImGui::GetContentRegionAvail().x;
+        float buttonHeight = UIConfig::CROP_RATIO_BUTTON_HEIGHT;
+        
+        for (int i = 0; i < 14; i++) {
+            bool isSelected = (m_CropRatioIndex == i);
+            
+            // Highlight selected ratio
+            if (isSelected) {
+                ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+            }
+            
+            if (ImGui::Button(ratios[i].label, ImVec2(availWidth, buttonHeight))) {
+                m_CropRatioIndex = i;
+                
+                // Reset crop rect to centered with new aspect ratio
+                if (ratios[i].ratio > 0.0f && m_ProcessedTexture) {
+                    float aspectRatio = ratios[i].ratio; // Desired aspect ratio (width/height)
+                    
+                    // Get actual image dimensions (accounting for rotation)
+                    bool isRotated90or270 = (m_RotationAngle == 90 || m_RotationAngle == 270);
+                    float imgW = isRotated90or270 ? (float)m_ProcessedTexture.height : (float)m_ProcessedTexture.width;
+                    float imgH = isRotated90or270 ? (float)m_ProcessedTexture.width : (float)m_ProcessedTexture.height;
+                    float imgAspect = imgW / imgH;
+                    
+                    // Convert target aspect ratio to normalized coordinates
+                    // In normalized coords, the image is 1x1, so we need to account for actual aspect
+                    float normAspectRatio = aspectRatio / imgAspect;
+                    
+                    // Calculate the largest centered crop with the given aspect ratio
+                    float w, h;
+                    if (normAspectRatio >= 1.0f) {
+                        // Crop is wider than image (in normalized coords)
+                        w = 1.0f;
+                        h = 1.0f / normAspectRatio;
+                    } else {
+                        // Crop is taller than image (in normalized coords)
+                        h = 1.0f;
+                        w = normAspectRatio;
+                    }
+                    
+                    m_CropRect[0] = (1.0f - w) * 0.5f;
+                    m_CropRect[1] = (1.0f - h) * 0.5f;
+                    m_CropRect[2] = m_CropRect[0] + w;
+                    m_CropRect[3] = m_CropRect[1] + h;
+                } else {
+                    // Free mode - reset to full image
+                    m_CropRect[0] = 0.0f;
+                    m_CropRect[1] = 0.0f;
+                    m_CropRect[2] = 1.0f;
+                    m_CropRect[3] = 1.0f;
+                }
+            }
+            
+            if (isSelected) {
+                ImGui::PopStyleColor();
+            }
+            
+            UI_GapSmall();
+        }
+        
+    } else {
+        // Normal Develop panel content
+        
+        // Histogram Display
+        // Read back histogram data from GPU buffer (Use Display buffer which is stable)
+        if (m_HistogramBufferDisplay) {
         uint32_t* ptr = (uint32_t*)[m_HistogramBufferDisplay contents];
         
         // Ensure size
@@ -1150,10 +1836,10 @@ void UmbriferaApp::RenderUI() {
     ImGui::Dummy(ImVec2(0.0f, 20.0f));
 
     // Save Preset Button (Moved to bottom)
-    float availWidth = ImGui::GetContentRegionAvail().x;
-    float buttonWidth = 150.0f;
-    ImGui::SetCursorPosX((availWidth - buttonWidth) * 0.5f + ImGui::GetCursorPosX());
-    if (ImGui::Button("Save Preset", ImVec2(buttonWidth, 40))) {
+    float availWidth2 = ImGui::GetContentRegionAvail().x;
+    float buttonWidth2 = 150.0f;
+    ImGui::SetCursorPosX((availWidth2 - buttonWidth2) * 0.5f + ImGui::GetCursorPosX());
+    if (ImGui::Button("Save Preset", ImVec2(buttonWidth2, 40))) {
         m_ShowSavePresetDialog = true;
         m_NewPresetName[0] = '\0'; // Reset name
     }
@@ -1162,7 +1848,7 @@ void UmbriferaApp::RenderUI() {
         m_ImageDirty = true; // Trigger re-processing
     }
     
-    // ImGui::EndChild();
+    } // End of normal Develop panel else block
     
     // Bottom Margin
     ImGui::Dummy(ImVec2(0.0f, 10.0f));
