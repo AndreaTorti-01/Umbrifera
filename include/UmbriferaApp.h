@@ -1,6 +1,7 @@
 #pragma once
 
 #include <vector>
+#include <deque>
 #include <string>
 #include <thread>
 #include <atomic>
@@ -14,6 +15,12 @@
 #include <simd/simd.h>
 
 struct GLFWwindow;
+
+struct UndoState {
+    std::vector<uint16_t> textureData; // 16-bit RGBA pixel data
+    int width;
+    int height;
+};
 
 struct Uniforms {
     float exposure;
@@ -217,6 +224,9 @@ private:
     // Pending Rotation Operation (deferred to next frame)
     bool m_RotatePending = false;
     float m_PendingRotationAngle = 0.0f; // degrees
+    
+    // Pending Undo Operation (deferred to next frame to avoid texture-in-use issues)
+    bool m_UndoPending = false;
 
     id<MTLTexture> m_LogoTexture = nil;
     id<MTLTexture> m_RotateCWTexture = nil;
@@ -224,6 +234,13 @@ private:
     id<MTLTexture> m_CropTexture = nil;
     id<MTLTexture> m_CropRotateTexture = nil;
     id<MTLTexture> m_FitScreenTexture = nil;
+    id<MTLTexture> m_UndoTexture = nil;
+    
+    // Undo State (up to 10 states)
+    static constexpr int MAX_UNDO_STATES = 10;
+    std::deque<UndoState> m_UndoStack;
+    void PushUndoState();
+    void Undo();
     id<MTLBuffer> m_HistogramBuffer = nil;
     id<MTLBuffer> m_HistogramBufferDisplay = nil; // Double buffering for display
     id<MTLSamplerState> m_TextureSampler = nil; // For linear filtering

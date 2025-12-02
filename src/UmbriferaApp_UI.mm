@@ -37,6 +37,17 @@ void UmbriferaApp::OpenResizeDialog() {
 }
 
 void UmbriferaApp::RenderUI() {
+    // Global Keyboard Shortcuts
+    ImGuiIO& io = ImGui::GetIO();
+    
+    // Undo: Cmd+Z (macOS) or Ctrl+Z (other platforms)
+    bool modKey = io.KeySuper || io.KeyCtrl; // Super = Cmd on macOS
+    if (modKey && ImGui::IsKeyPressed(ImGuiKey_Z, false) && !io.KeyShift) {
+        if (!m_UndoStack.empty() && !m_IsLoading && !m_CropMode && !m_ArbitraryRotateDragging && !m_UndoPending) {
+            m_UndoPending = true; // Defer to next frame to avoid texture-in-use issues
+        }
+    }
+    
     // Loading Modal (Blocks interaction)
     if (m_IsLoading) {
         if (!ImGui::IsPopupOpen("Loading...")) {
@@ -485,6 +496,8 @@ void UmbriferaApp::RenderUI() {
             if (m_ResizeTargetWidth > 0 && m_ResizeTargetHeight > 0 &&
                 m_ResizeTargetWidth <= originalWidth && m_ResizeTargetHeight <= originalHeight &&
                 (m_ResizeTargetWidth != originalWidth || m_ResizeTargetHeight != originalHeight)) {
+                
+                PushUndoState(); // Save state before resize
                 
                 // Create new resized raw texture
                 MTLTextureDescriptor* newRawDesc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Unorm 
@@ -1124,6 +1137,7 @@ void UmbriferaApp::RenderUI() {
                 m_ArbitraryRotateDragging = false;
                 
                 if (fabsf(m_ArbitraryRotationAngle) > 0.01f) {
+                    PushUndoState(); // Save state before straighten
                     m_RotatePending = true;
                     m_PendingRotationAngle = m_ArbitraryRotationAngle;
                 }
@@ -1266,9 +1280,11 @@ void UmbriferaApp::RenderUI() {
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Straighten (drag left/right)");
             }
             
-            // RIGHT: Fit Screen button
+            // RIGHT: Undo button (leftmost of right side), then Fit Screen
+            float rightBtnX = winPos.x + winSize.x - btnMargin - iconSize - 8.0f;
+            
+            // Fit Screen button (rightmost)
             if (m_FitScreenTexture) {
-                float rightBtnX = winPos.x + winSize.x - btnMargin - iconSize - 8.0f;
                 ImGui::SetCursorScreenPos(ImVec2(rightBtnX, iconBtnY));
                 if (ImGui::ImageButton("##FitScreen", (ImTextureID)m_FitScreenTexture, ImVec2(iconSize, iconSize))) {
                     m_ViewZoom = 1.0f;
@@ -1276,6 +1292,31 @@ void UmbriferaApp::RenderUI() {
                     m_ViewOffset[1] = 0.0f;
                 }
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Fit to Screen");
+                rightBtnX -= (iconSize + 8.0f + btnGap);
+            }
+            
+            // Undo button (left of Fit Screen)
+            if (m_UndoTexture) {
+                bool canUndo = !m_UndoStack.empty() && !m_UndoPending;
+                if (!canUndo) {
+                    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.3f);
+                }
+                ImGui::SetCursorScreenPos(ImVec2(rightBtnX, iconBtnY));
+                if (ImGui::ImageButton("##Undo", (ImTextureID)m_UndoTexture, ImVec2(iconSize, iconSize))) {
+                    if (canUndo) {
+                        m_UndoPending = true; // Defer to next frame to avoid texture-in-use issues
+                    }
+                }
+                if (ImGui::IsItemHovered()) {
+                    if (canUndo) {
+                        ImGui::SetTooltip("Undo (Cmd+Z)");
+                    } else {
+                        ImGui::SetTooltip("Nothing to undo");
+                    }
+                }
+                if (!canUndo) {
+                    ImGui::PopStyleVar();
+                }
             }
         } else if (m_ArbitraryRotateDragging) {
             // While dragging to rotate, show the angle in center
@@ -1296,6 +1337,7 @@ void UmbriferaApp::RenderUI() {
             ImGui::SetCursorScreenPos(ImVec2(centerX + cancelWidth + btnGap, btnY));
             if (ImGui::Button(applyCropLabel, ImVec2(applyCropWidth, 0))) {
                 if (m_RawTexture && m_Device && m_CommandQueue) {
+                    PushUndoState(); // Save state before crop
                     m_CropPending = true;
                     m_PendingCropRect[0] = m_CropRect[0];
                     m_PendingCropRect[1] = m_CropRect[1];

@@ -13,6 +13,9 @@ void UmbriferaApp::LoadRawImage(const std::string& path) {
     if (m_IsLoading) return;
     m_IsLoading = true;
     
+    // Clear undo stack when loading a new image
+    m_UndoStack.clear();
+    
     // We run the loading process in a separate thread (background task)
     // so that the main application window doesn't freeze while loading.
     m_LoadingThread = std::thread([this, path]() {

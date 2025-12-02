@@ -445,6 +445,12 @@ void UmbriferaApp::RenderFrame() {
                 m_ImageDirty = true;
             }
         }
+        
+        // Handle pending undo operation (deferred from previous frame)
+        if (m_UndoPending) {
+            m_UndoPending = false;
+            Undo();
+        }
             
         // Compute Raw Histogram immediately for Auto Adjust
         if (m_HistogramPSO && m_RawHistogramBuffer && m_RawTexture) {
@@ -523,4 +529,80 @@ void UmbriferaApp::RenderFrame() {
         [commandBuffer presentDrawable:drawable];
         [commandBuffer commit];
     }
+}
+
+void UmbriferaApp::PushUndoState() {
+    if (!m_RawTexture) return;
+    
+    NSUInteger width = m_RawTexture.width;
+    NSUInteger height = m_RawTexture.height;
+    NSUInteger bytesPerRow = width * 4 * sizeof(uint16_t); // RGBA16
+    
+    UndoState state;
+    state.width = (int)width;
+    state.height = (int)height;
+    state.textureData.resize(width * height * 4); // 4 components per pixel
+    
+    // Read texture data from GPU
+    MTLRegion region = MTLRegionMake2D(0, 0, width, height);
+    [m_RawTexture getBytes:state.textureData.data() bytesPerRow:bytesPerRow fromRegion:region mipmapLevel:0];
+    
+    // Add to undo stack, removing oldest if at max capacity
+    if (m_UndoStack.size() >= MAX_UNDO_STATES) {
+        m_UndoStack.pop_front();
+    }
+    m_UndoStack.push_back(std::move(state));
+}
+
+void UmbriferaApp::Undo() {
+    if (m_UndoStack.empty() || !m_Device || !m_CommandQueue) return;
+    
+    UndoState state = std::move(m_UndoStack.back());
+    m_UndoStack.pop_back();
+    
+    NSUInteger width = state.width;
+    NSUInteger height = state.height;
+    
+    // Create new raw texture
+    MTLTextureDescriptor* rawDesc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Unorm 
+        width:width height:height mipmapped:YES];
+    NSUInteger maxDim = (width > height) ? width : height;
+    NSUInteger mipLevels = 1 + (NSUInteger)floor(log2((double)maxDim));
+    rawDesc.mipmapLevelCount = mipLevels;
+    rawDesc.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+    id<MTLTexture> newRawTexture = [m_Device newTextureWithDescriptor:rawDesc];
+    
+    if (!newRawTexture) return;
+    
+    // Upload texture data
+    NSUInteger bytesPerRow = width * 4 * sizeof(uint16_t);
+    MTLRegion region = MTLRegionMake2D(0, 0, width, height);
+    [newRawTexture replaceRegion:region mipmapLevel:0 withBytes:state.textureData.data() bytesPerRow:bytesPerRow];
+    
+    // Generate mipmaps
+    id<MTLCommandBuffer> cb = [m_CommandQueue commandBuffer];
+    id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+    [blit generateMipmapsForTexture:newRawTexture];
+    [blit endEncoding];
+    [cb commit];
+    [cb waitUntilCompleted];
+    
+    // Replace raw texture
+    m_RawTexture = newRawTexture;
+    
+    // Create new processed texture
+    MTLTextureDescriptor* targetDesc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm 
+        width:width height:height mipmapped:YES];
+    targetDesc.mipmapLevelCount = mipLevels;
+    targetDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+    m_ProcessedTexture = [m_Device newTextureWithDescriptor:targetDesc];
+    
+    // Reset view
+    m_ViewZoom = 1.0f;
+    m_ViewOffset[0] = 0.0f;
+    m_ViewOffset[1] = 0.0f;
+    m_RotationAngle = 0;
+    
+    // Trigger reprocess
+    m_ImageDirty = true;
 }
