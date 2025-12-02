@@ -23,6 +23,7 @@ void UmbriferaApp::InitMetal() {
     m_MetalLayer = [CAMetalLayer layer];
     m_MetalLayer.device = m_Device;
     m_MetalLayer.pixelFormat = MTLPixelFormatBGRA8Unorm; // Screen format
+    m_MetalLayer.displaySyncEnabled = YES; // VSync
     nswin.contentView.layer = m_MetalLayer;
     nswin.contentView.wantsLayer = YES;
 
@@ -318,6 +319,7 @@ void UmbriferaApp::RenderFrame() {
             
             // Initial Process
             m_ImageDirty = true;
+            m_RawHistogramDirty = true;
         }
         
         // Handle pending crop operation (deferred from previous frame to avoid texture-in-use)
@@ -426,6 +428,7 @@ void UmbriferaApp::RenderFrame() {
                 // Regenerate grain for new crop dimensions
                 m_GrainNeedsRegeneration = true;
                 m_ImageDirty = true;
+                m_RawHistogramDirty = true;
             }
         }
         
@@ -510,6 +513,7 @@ void UmbriferaApp::RenderFrame() {
                 // Regenerate grain for new rotation dimensions
                 m_GrainNeedsRegeneration = true;
                 m_ImageDirty = true;
+                m_RawHistogramDirty = true;
             }
         }
         
@@ -519,8 +523,8 @@ void UmbriferaApp::RenderFrame() {
             Undo();
         }
             
-        // Compute Raw Histogram immediately for Auto Adjust
-        if (m_HistogramPSO && m_RawHistogramBuffer && m_RawTexture) {
+        // Compute Raw Histogram only when raw texture changes (for Auto Adjust)
+        if (m_RawHistogramDirty && m_HistogramPSO && m_RawHistogramBuffer && m_RawTexture) {
             id<MTLCommandBuffer> cb = [m_CommandQueue commandBuffer];
             
             // Clear Buffer
@@ -548,6 +552,8 @@ void UmbriferaApp::RenderFrame() {
             // Read back to CPU vector
             uint32_t* ptr = (uint32_t*)[m_RawHistogramBuffer contents];
             m_RawHistogram.assign(ptr, ptr + 256);
+            
+            m_RawHistogramDirty = false;
         }
         
         UpdateUniforms();
@@ -675,4 +681,5 @@ void UmbriferaApp::Undo() {
     
     // Trigger reprocess
     m_ImageDirty = true;
+    m_RawHistogramDirty = true;
 }

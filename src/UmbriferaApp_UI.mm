@@ -555,6 +555,7 @@ void UmbriferaApp::RenderUI() {
                 
                 // Trigger reprocess
                 m_ImageDirty = true;
+                m_RawHistogramDirty = true;
             }
             
             initialized = false;

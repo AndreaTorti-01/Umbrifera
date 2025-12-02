@@ -121,6 +121,7 @@ private:
     int m_RotationAngle = 0; // 0, 90, 180, 270 degrees
     bool m_FirstLayout = true;
     bool m_ImageDirty = false; // Flag to trigger re-processing
+    bool m_RawHistogramDirty = false; // Flag to recompute raw histogram (for Auto Adjust)
     
     // Crop Mode State
     bool m_CropMode = false;
