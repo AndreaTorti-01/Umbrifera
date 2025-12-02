@@ -84,15 +84,16 @@ Enhances local contrast at different frequency bands using mipmap-based blur app
 
 ### Step 3.5: HSL Adjustments (Selective Color)
 Allows tweaking Hue, Saturation, and Luminance for specific color ranges.
-*   **Color Model**: RGB is converted to HSV.
+*   **Color Model**: RGB is converted to HSV for hue selection and saturation/luminance adjustments.
 *   **Slicing**: The Hue circle is divided into 15 slices.
 *   **Weighting**: A Gaussian weight is calculated based on the pixel's hue distance from each slice center.
-*   **Application**: The weighted adjustments are applied to the pixel's H, S, and V values.
-*   **Conversion**: Converted back to RGB.
+*   **Hue Application**: Hue adjustments are applied using **RGB-space rotation** (Rodrigues' formula with axis (1,1,1)) to avoid precision loss from color space conversion.
+*   **Saturation & Luminance**: Applied in HSV space after hue rotation.
 
 ### Step 3.6: Hue Offset
 Global rotation of the hue wheel.
-*   Applied in HSV space.
+*   Applied using **RGB-space rotation** (Rodrigues' formula) instead of HSV space conversion.
+*   This avoids precision loss from repeated RGB↔HSV conversions and prevents subpixel shifting artifacts.
 
 ### Step 3.7: Contrast
 Adjusts the contrast curve pivoting around mid-grey.
@@ -122,6 +123,53 @@ Four equidistant tonal controls with Gaussian falloff, similar to HSL adjustment
 Darkens the corners of the image.
 *   **Shape**: Circular, aspect-ratio corrected (square relative to the crop).
 *   **Falloff**: `smoothstep` based on distance from center.
+
+### Step 3.10: Film Grain (35mm Negative Film Emulation)
+Emulates the physical grain structure of 35mm negative film stock using a pre-computed grain texture.
+
+#### Architecture: Pre-computed Grain Texture
+Unlike per-frame grain computation, the grain pattern is generated once via a compute shader and stored in a texture. This texture is then sampled during rendering with exposure-weighted overlay, allowing adjustments to exposure/contrast without regenerating the grain.
+
+**Grain texture regeneration triggers:**
+*   New image loaded
+*   Grain size slider changed
+*   Image dimensions changed (crop, rotate, resize)
+
+#### Photochemical Basis
+35mm film consists of silver-halide crystals that vary in size, shape, and sensitivity. Grain visibility changes with luminance:
+*   **Shadows**: Most visible grain (fewer exposed grains = irregular density, coarse clumping)
+*   **Midtones**: Classic 35mm grain pattern (balanced exposure)
+*   **Highlights**: Least visible grain (densely packed exposed grains = smooth)
+
+#### Multi-Layer Grain Structure
+The grain texture stores three noise layers (in RGBA16Float format):
+
+1.  **Layer A (R channel) - Large Base Grain**: Represents largest silver-halide crystals in slower emulsion layers.
+    *   Low frequency, soft, clumpy distribution
+    *   Uses Worley (cellular) noise + value noise
+
+2.  **Layer B (G channel) - Medium Grain**: Main visible 35mm grain.
+    *   Medium frequency, irregular, organic
+    *   Uses multi-octave simplex noise
+
+3.  **Layer C (B channel) - Fine Grain**: Chemical speckling / micro-grain.
+    *   High frequency, shimmering dust-like texture
+    *   Uses filtered hash noise
+
+4.  **Chromatic Seed (A channel)**: Hash value for deriving subtle color offsets at render time.
+
+#### Exposure-Weighted Response (Computed at Render Time)
+Grain intensity is modulated by the current pixel luminance, allowing the grain to respond correctly even after exposure/contrast adjustments:
+*   `grainResponse = pow(1.0 - percLuma, 1.5) * shadowBoost`
+*   Shadow boost increases with amount (higher ISO = grainier shadows)
+*   Steep falloff in highlights for smooth bright areas
+
+#### Amount Slider Controls
+A single "Amount" parameter (0.0 - 1.0) controls:
+1.  **Grain opacity/contrast**: Primary intensity scaling
+2.  **Layer weighting**: Low amount emphasizes fine grain; high amount boosts large grain
+3.  **Chromatic variation**: Increases from 1% to 4% with amount
+4.  **Shadow response**: Shadow boost increases with amount (1.0x to 1.8x)
 
 ### Step 3.11: Tone Mapping
 Compresses the high dynamic range (linear) into the displayable range (0.0 - 1.0).
@@ -167,3 +215,26 @@ The "Auto" button calculates optimal starting values based on the **Raw Histogra
 5.  **Shadows/Highlights**: Reset to 0 - left for user creative control
 6.  **Auto Vibrance**: Modest boost (0.1) for natural colors
 7.  **Resets**: Temperature, Tint, Clarity, Texture, Shadows, Highlights set to neutral (0.0)
+
+## Technical Appendix: RGB-Space Hue Rotation
+
+### Why RGB-Space Rotation?
+The application uses **RGB-space hue rotation** instead of HSV color space conversion to avoid:
+- **Precision loss**: Repeated RGB→HSV→RGB conversions introduce rounding errors that accumulate
+- **Subpixel shifting**: Saturation channel precision loss can cause color channel misalignment
+- **Text legibility artifacts**: When hue is rotated, imprecise conversions cause edges (like text) to appear slightly blurred or shifted
+
+### Implementation (Rodrigues' Rotation Formula)
+Hue rotation is modeled as a rotation around the axis `(1, 1, 1)` in RGB space (which corresponds to the gray line from black to white):
+
+```
+axis = normalize((1, 1, 1))
+rotated = rgb * cos(θ) + (axis × rgb) * sin(θ) + axis * (axis · rgb) * (1 - cos(θ))
+```
+
+Where `θ = angle * 2π` and `angle` is in range [0, 1] (where 1 = 360°).
+
+This formula preserves:
+- **Luminance**: The gray component (r=g=b) remains unchanged
+- **Saturation**: The distance from the gray line is preserved
+- **Precision**: No intermediate color space conversion, all floating-point arithmetic in RGB

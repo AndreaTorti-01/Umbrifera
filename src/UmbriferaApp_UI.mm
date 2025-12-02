@@ -633,14 +633,22 @@ void UmbriferaApp::RenderUI() {
         
         ImVec2 windowSize = ImGui::GetContentRegionAvail();
         
-        // Canvas Size: Window - Margins
+        // Canvas Size: Window - Margins - ButtonBarHeight
         // Width: Window - Left Margin - Right Margin
         // Height: Window - Top Margin - Bottom Margin - ButtonBarHeight
         ImVec2 availSize = ImVec2(windowSize.x - 2.0f * margin, windowSize.y - 2.0f * margin - buttonBarHeight);
         
-        // Apply Left and Top Margin
+        // Apply Left Margin
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + margin);
-        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + margin);
+        // Apply Top Margin (includes button bar height if bar is at top)
+        float baseCursorY = ImGui::GetCursorPosY();
+        if (m_ButtonBarAtTop) {
+            // Bar at top: button bar + margin before image
+            ImGui::SetCursorPosY(baseCursorY + buttonBarHeight + margin);
+        } else {
+            // Bar at bottom: just margin before image
+            ImGui::SetCursorPosY(baseCursorY + margin);
+        }
         
         ImVec2 cursorScreenPos = ImGui::GetCursorScreenPos();
         
@@ -1191,13 +1199,19 @@ void UmbriferaApp::RenderUI() {
             m_ViewOffset[1] += delta.y / dispH;
         }
         
-        // Buttons at bottom
-        // Calculate position for button row (after canvas + margin)
+        // Button bar position (top or bottom)
+        // Calculate position for button row
         ImVec2 winPos = ImGui::GetWindowPos();
         ImVec2 winSize = ImGui::GetWindowSize();
         
-        // Position button bar at the very bottom of the window area
-        float btnRowY = winPos.y + winSize.y - buttonBarHeight;
+        // Position button bar at top or bottom of the window area
+        float btnRowY;
+        if (m_ButtonBarAtTop) {
+            // Flush with the title bar (use window position + frame height for title bar)
+            btnRowY = winPos.y + ImGui::GetFrameHeight();  // Title bar height
+        } else {
+            btnRowY = winPos.y + winSize.y - buttonBarHeight;  // At the very bottom
+        }
         ImVec2 btnRowMin = ImVec2(winPos.x, btnRowY);
         ImVec2 btnRowMax = ImVec2(winPos.x + winSize.x, btnRowY + buttonBarHeight);
         
@@ -1666,7 +1680,7 @@ void UmbriferaApp::RenderUI() {
     
     // HSL Adjustments
     bool hsl_active = m_Uniforms.hsl_enabled != 0;
-    if (ImGui::Checkbox("Enable HSL", &hsl_active)) {
+    if (ImGui::Checkbox("Enable HSL Controls", &hsl_active)) {
         m_Uniforms.hsl_enabled = hsl_active ? 1 : 0;
         changed = true;
     }

@@ -100,8 +100,8 @@ Single-pass fragment shader applies (in order):
 7. Hue offset (global)
 8. **HSL adjustments** (15 color zones, Gaussian falloff, preserves HDR)
 9. Vignette
-10. Film grain
-11. Tone mapping (Standard/ACES/Reinhard)
+10. Film grain (35mm multi-layer with pre-computed texture overlay)
+11. Tone mapping (Standard gamma)
 
 **Critical**: HSL adjustments do NOT use `saturate()` on luminance to preserve HDR data.
 

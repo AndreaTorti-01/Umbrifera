@@ -80,6 +80,7 @@ public:
 public:
     bool m_ResetLayoutRequested = false; // Public so menu handler can access it
     bool m_ShowResizeDialog = false;     // Public so menu handler can access it
+    bool m_ButtonBarAtTop = false;       // Button bar position: false = bottom, true = top
     
 private:
     void InitWindow();
@@ -98,6 +99,7 @@ private:
     void SetupLayout();
     void ComputeHistogram();
     void CalculateAutoSettings(); // New: Auto Adjust
+    Uniforms GetDefaultUniforms() const; // Get default uniform values
 
     // Platform specific helpers
     void InitMetal();
@@ -184,8 +186,11 @@ private:
     id<MTLComputePipelineState> m_HistogramPSO = nil;
     id<MTLComputePipelineState> m_Lanczos3PSO = nil;  // Lanczos3 downscale shader
     id<MTLComputePipelineState> m_RotatePSO = nil;    // Rotation shader
+    id<MTLComputePipelineState> m_GrainPSO = nil;     // Film grain generation shader
     id<MTLTexture> m_RawTexture = nil;       // Source (Immutable)
     id<MTLTexture> m_ProcessedTexture = nil; // Destination (Render Target)
+    id<MTLTexture> m_GrainTexture = nil;     // Pre-computed film grain pattern
+    bool m_GrainNeedsRegeneration = true;    // Flag to regenerate grain texture
     
     // Presets
     struct Preset {

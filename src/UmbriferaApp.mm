@@ -17,6 +17,8 @@ static void glfw_error_callback(int error, const char* description)
 }
 
 UmbriferaApp::UmbriferaApp() {
+    // Initialize uniforms to defaults
+    // Each slider default appears here, making it easy to update centrally
     m_Uniforms = {0};
     m_Uniforms.exposure = 0.0f;
     m_Uniforms.contrast = 1.0f;
@@ -34,11 +36,11 @@ UmbriferaApp::UmbriferaApp() {
     m_Uniforms.vignette_feather = 0.5f;
     m_Uniforms.vignette_size = 0.5f;
     m_Uniforms.grain_amount = 0.0f;
-    m_Uniforms.grain_size = 1.6f; // Default coarseness
+    m_Uniforms.grain_size = 1.0f;
     m_Uniforms.clarity = 0.0f;
     m_Uniforms.texture_amt = 0.0f;
     
-    // Initialize Constants
+    // Initialize Constants (immutable, not reset by auto adjust)
     m_Uniforms.contrast_pivot = 0.18f; // Mid-grey
     m_Uniforms.blacks_scale = 0.1f;
     m_Uniforms.whites_scale = 0.2f;
@@ -300,7 +302,12 @@ void UmbriferaApp::Shutdown() {
 }
 
 void UmbriferaApp::UpdateUniforms() {
-    // Update any time-based or dynamic uniforms here
+    // Track grain_size changes to trigger regeneration
+    static float lastGrainSize = -1.0f;
+    if (lastGrainSize != m_Uniforms.grain_size) {
+        m_GrainNeedsRegeneration = true;
+        lastGrainSize = m_Uniforms.grain_size;
+    }
     
     UpdateMacOSMenu();
 }
@@ -315,6 +322,7 @@ void UmbriferaApp::UpdateUniforms() {
 - (void)exportTiff:(id)sender;
 - (void)resetLayout:(id)sender;
 - (void)resizeImage:(id)sender;
+- (void)toggleButtonBarPosition:(id)sender;
 @end
 
 void UmbriferaApp::OpenExportDialog(const std::string& format) {
@@ -449,30 +457,8 @@ void UmbriferaApp::LoadPresets() {
     // Auto Preset (Special - calls CalculateAutoSettings)
     Preset autoPreset;
     autoPreset.name = "Auto";
-    // Initialize with default values
-    autoPreset.data.exposure = 0.0f;
-    autoPreset.data.contrast = 1.0f;
-    autoPreset.data.highlights = 0.0f;
-    autoPreset.data.shadows = 0.0f;
-    autoPreset.data.whites = 0.0f;
-    autoPreset.data.blacks = 0.0f;
-    autoPreset.data.saturation = 1.0f;
-    autoPreset.data.vibrance = 0.0f;
-    autoPreset.data.hue_offset = 0.0f;
-    autoPreset.data.temperature = 0.0f;
-    autoPreset.data.tint = 0.0f;
-    autoPreset.data.vignette_strength = 0.0f;
-    autoPreset.data.vignette_feather = 0.5f;
-    autoPreset.data.vignette_size = 0.5f;
-    autoPreset.data.grain_amount = 0.0f;
-    autoPreset.data.hsl_enabled = 0;
-    
-    // Constants
-    autoPreset.data.contrast_pivot = 0.18f;
-    autoPreset.data.blacks_scale = 0.1f;
-    autoPreset.data.whites_scale = 0.2f;
-    autoPreset.data.hsl_enabled = 0;
-    for(int i=0; i<15; ++i) autoPreset.data.hsl_adjustments[i] = {0.0f, 0.0f, 0.0f, 0.0f};
+    // Initialize with default values using the centralized defaults
+    autoPreset.data = GetDefaultUniforms();
     
     m_Presets.push_back(autoPreset);
     
@@ -534,6 +520,17 @@ void UmbriferaApp::ApplyPreset(const Preset& preset) {
 
 void UmbriferaApp::CalculateAutoSettings() {
     if (m_RawHistogram.empty()) return;
+    
+    // Get default Uniforms for resetting
+    Uniforms defaults = GetDefaultUniforms();
+    
+    // Store the original exposure/contrast/blacks/whites for restoration
+    // These are the only values we calculate in auto mode
+    float autoExposure = 0.0f;
+    float autoContrast = 1.12f;
+    float autoBlacks = 0.0f;
+    float autoWhites = 0.0f;
+    float autoVibrance = 0.1f;
     
     // Analyze Raw Histogram (256 bins)
     // Find the range and distribution of tonal values
@@ -598,11 +595,11 @@ void UmbriferaApp::CalculateAutoSettings() {
     float exposureShift = fullShift * 0.6f; // 60% correction
     exposureShift = std::clamp(exposureShift, -2.5f, 2.5f);
     
-    m_Uniforms.exposure = exposureShift;
+    autoExposure = exposureShift;
     
     // 2. Auto Contrast
     // Moderate contrast boost for punch
-    m_Uniforms.contrast = 1.12f;
+    autoContrast = 1.12f;
     
     // 3. Auto Blacks/Whites
     // With new Gaussian model, these are additive adjustments
@@ -616,7 +613,6 @@ void UmbriferaApp::CalculateAutoSettings() {
     // Slider value of 1.0 with weight 0.15 adds 0.15 to luma
     // We want to shift blacks down if there's headroom
     // autoBlacks negative = darken blacks
-    float autoBlacks = 0.0f;
     if (newMin > 0.02f) {
         // There's room to set a black point
         // Scale: newMin of 0.1 -> blacks of -0.5 (moderate darkening)
@@ -625,33 +621,82 @@ void UmbriferaApp::CalculateAutoSettings() {
     
     // Whites: if newMax < 1, we have room to brighten whites
     // autoWhites positive = brighten whites  
-    float autoWhites = 0.0f;
     if (newMax < 0.95f) {
         // There's room to extend whites
         // Scale: newMax of 0.8 -> whites of 0.5 (moderate brightening)
         autoWhites = std::clamp((1.0f - newMax) * 2.5f, 0.0f, 0.5f);
     }
     
-    m_Uniforms.blacks = std::clamp(autoBlacks, -1.0f, 1.0f);
-    m_Uniforms.whites = std::clamp(autoWhites, -1.0f, 1.0f);
-    
-    // 4. Reset tonal controls to neutral
-    // Don't auto-adjust shadows/highlights - let user control mood
-    m_Uniforms.shadows = 0.0f;
-    m_Uniforms.highlights = 0.0f;
+    autoBlacks = std::clamp(autoBlacks, -1.0f, 1.0f);
+    autoWhites = std::clamp(autoWhites, -1.0f, 1.0f);
     
     // 5. Modest vibrance, neutral saturation
-    m_Uniforms.vibrance = 0.1f;
-    m_Uniforms.saturation = 1.0f;
+    autoVibrance = 0.1f;
     
-    // 6. Reset other controls to neutral
-    m_Uniforms.temperature = 0.0f;
-    m_Uniforms.tint = 0.0f;
-    m_Uniforms.clarity = 0.0f;
-    m_Uniforms.texture_amt = 0.0f;
+    // === Reset all uniforms to defaults, then apply auto-calculated values ===
+    // This ensures future sliders are automatically included without code changes
+    
+    // Store base_exposure and constants separately - these are not reset by auto
+    float savedBaseExposure = m_Uniforms.base_exposure;
+    float savedContrastPivot = m_Uniforms.contrast_pivot;
+    float savedBlacksScale = m_Uniforms.blacks_scale;
+    float savedWhitesScale = m_Uniforms.whites_scale;
+    
+    // Reset to defaults (including HSL controls)
+    m_Uniforms = defaults;
+    
+    // Restore immutable values (constants only, not user-editable sliders)
+    m_Uniforms.base_exposure = savedBaseExposure;
+    m_Uniforms.contrast_pivot = savedContrastPivot;
+    m_Uniforms.blacks_scale = savedBlacksScale;
+    m_Uniforms.whites_scale = savedWhitesScale;
+    
+    // Now apply auto-calculated values
+    m_Uniforms.exposure = autoExposure;
+    m_Uniforms.contrast = autoContrast;
+    m_Uniforms.blacks = autoBlacks;
+    m_Uniforms.whites = autoWhites;
+    m_Uniforms.vibrance = autoVibrance;
+    m_Uniforms.saturation = 1.0f;
     
     // Trigger update
     m_ImageDirty = true;
+}
+
+Uniforms UmbriferaApp::GetDefaultUniforms() const {
+    Uniforms defaults = {};
+    
+    // Slider defaults (these appear in the UI and are user-editable)
+    defaults.exposure = 0.0f;
+    defaults.contrast = 1.0f;
+    defaults.highlights = 0.0f;
+    defaults.shadows = 0.0f;
+    defaults.whites = 0.0f;
+    defaults.blacks = 0.0f;
+    defaults.saturation = 1.0f;
+    defaults.vibrance = 0.0f;
+    defaults.hue_offset = 0.0f;
+    defaults.temperature = 0.0f;
+    defaults.tint = 0.0f;
+    defaults.vignette_strength = 0.0f;
+    defaults.vignette_feather = 0.5f;
+    defaults.vignette_size = 0.5f;
+    defaults.grain_amount = 0.0f;
+    defaults.grain_size = 1.0f;
+    defaults.clarity = 0.0f;
+    defaults.texture_amt = 0.0f;
+    defaults.base_exposure = 0.0f;
+    
+    // Constants (not user-editable)
+    defaults.contrast_pivot = 0.18f;
+    defaults.blacks_scale = 0.1f;
+    defaults.whites_scale = 0.2f;
+    defaults.hsl_enabled = 0;
+    for (int i = 0; i < 15; i++) {
+        defaults.hsl_adjustments[i] = {0.0f, 0.0f, 0.0f, 0.0f};
+    }
+    
+    return defaults;
 }
 @implementation MenuHandler
 - (void)exportJpg:(id)sender {
@@ -679,6 +724,14 @@ void UmbriferaApp::CalculateAutoSettings() {
 - (void)resizeImage:(id)sender {
     if (_app) {
         _app->OpenResizeDialog();
+    }
+}
+- (void)toggleButtonBarPosition:(id)sender {
+    if (_app) {
+        _app->m_ButtonBarAtTop = !_app->m_ButtonBarAtTop;
+        // Update menu item state
+        NSMenuItem* item = (NSMenuItem*)sender;
+        [item setState:_app->m_ButtonBarAtTop ? NSControlStateValueOn : NSControlStateValueOff];
     }
 }
 @end
@@ -724,6 +777,10 @@ void UmbriferaApp::SetupMacOSMenu() {
     
     NSMenuItem* resetLayoutItem = [viewMenu addItemWithTitle:@"Reset Layout" action:@selector(resetLayout:) keyEquivalent:@"r"];
     [resetLayoutItem setTarget:g_MenuHandler];
+    
+    NSMenuItem* toggleButtonBarItem = [viewMenu addItemWithTitle:@"Toolbar at Top" action:@selector(toggleButtonBarPosition:) keyEquivalent:@""];
+    [toggleButtonBarItem setTarget:g_MenuHandler];
+    [toggleButtonBarItem setState:NSControlStateValueOff];
 
     // 4. Tools Menu
     NSMenuItem* toolsMenuItem = [mainMenu addItemWithTitle:@"Tools" action:nil keyEquivalent:@""];

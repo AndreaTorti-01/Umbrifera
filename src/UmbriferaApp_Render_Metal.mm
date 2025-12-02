@@ -68,6 +68,7 @@ void UmbriferaApp::InitMetal() {
     id<MTLFunction> histogramFunction = [library newFunctionWithName:@"histogram_main"];
     id<MTLFunction> boxDownscaleFunction = [library newFunctionWithName:@"box_downscale"];
     id<MTLFunction> rotateFunction = [library newFunctionWithName:@"rotate_kernel"];
+    id<MTLFunction> grainFunction = [library newFunctionWithName:@"generate_grain"];
 
     // 5. Create Render Pipeline State (for drawing the image)
     MTLRenderPipelineDescriptor* pipelineDescriptor = [[MTLRenderPipelineDescriptor alloc] init];
@@ -102,6 +103,13 @@ void UmbriferaApp::InitMetal() {
         NSLog(@"Error creating rotate pipeline state: %@", error);
         return;
     }
+    
+    // 9. Create Compute Pipeline State (for film grain generation)
+    m_GrainPSO = [m_Device newComputePipelineStateWithFunction:grainFunction error:&error];
+    if (!m_GrainPSO) {
+        NSLog(@"Error creating grain pipeline state: %@", error);
+        return;
+    }
 }
 
 void UmbriferaApp::CleanupMetal() {
@@ -118,6 +126,55 @@ void UmbriferaApp::ProcessImage() {
 
     // Create a command buffer for GPU commands
     id<MTLCommandBuffer> cb = [m_CommandQueue commandBuffer];
+    
+    // --- Pass 0: Generate Grain Texture (if needed) ---
+    if (m_GrainNeedsRegeneration && m_GrainPSO) {
+        // Create grain texture matching image dimensions
+        NSUInteger grainW = m_ProcessedTexture.width;
+        NSUInteger grainH = m_ProcessedTexture.height;
+        
+        // Create or recreate grain texture if size changed
+        if (!m_GrainTexture || 
+            m_GrainTexture.width != grainW || 
+            m_GrainTexture.height != grainH) {
+            
+            MTLTextureDescriptor* grainDesc = [MTLTextureDescriptor 
+                texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float 
+                width:grainW 
+                height:grainH 
+                mipmapped:NO];
+            grainDesc.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+            grainDesc.storageMode = MTLStorageModePrivate;
+            m_GrainTexture = [m_Device newTextureWithDescriptor:grainDesc];
+        }
+        
+        // Generate grain pattern
+        struct GrainParams {
+            uint32_t width;
+            uint32_t height;
+            float grainSize;
+            float seed;
+        };
+        
+        GrainParams grainParams;
+        grainParams.width = (uint32_t)grainW;
+        grainParams.height = (uint32_t)grainH;
+        grainParams.grainSize = m_Uniforms.grain_size;
+        // Use a fixed random seed for consistent grain pattern
+        grainParams.seed = 42.0f;
+        
+        id<MTLComputeCommandEncoder> grainEncoder = [cb computeCommandEncoder];
+        [grainEncoder setComputePipelineState:m_GrainPSO];
+        [grainEncoder setTexture:m_GrainTexture atIndex:0];
+        [grainEncoder setBytes:&grainParams length:sizeof(GrainParams) atIndex:0];
+        
+        MTLSize threadsPerThreadgroup = MTLSizeMake(16, 16, 1);
+        MTLSize threadgroups = MTLSizeMake((grainW + 15) / 16, (grainH + 15) / 16, 1);
+        [grainEncoder dispatchThreadgroups:threadgroups threadsPerThreadgroup:threadsPerThreadgroup];
+        [grainEncoder endEncoding];
+        
+        m_GrainNeedsRegeneration = false;
+    }
 
     // --- Pass 1: Image Processing (Render to Texture) ---
     // We render the raw texture into the processed texture, applying exposure/color shaders.
@@ -142,6 +199,7 @@ void UmbriferaApp::ProcessImage() {
     [re setRenderPipelineState:m_RenderPSO];
     [re setFragmentBytes:&m_Uniforms length:sizeof(Uniforms) atIndex:0];
     [re setFragmentTexture:m_RawTexture atIndex:0];
+    [re setFragmentTexture:m_GrainTexture atIndex:1];  // Pre-computed grain texture
     [re drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
     [re endEncoding];
     
@@ -255,6 +313,9 @@ void UmbriferaApp::RenderFrame() {
             // Set the base exposure calculated by the loader
             m_Uniforms.base_exposure = m_InitialExposure;
             
+            // Regenerate grain texture for new image dimensions
+            m_GrainNeedsRegeneration = true;
+            
             // Initial Process
             m_ImageDirty = true;
         }
@@ -362,6 +423,8 @@ void UmbriferaApp::RenderFrame() {
                 targetDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
                 m_ProcessedTexture = [m_Device newTextureWithDescriptor:targetDesc];
                 
+                // Regenerate grain for new crop dimensions
+                m_GrainNeedsRegeneration = true;
                 m_ImageDirty = true;
             }
         }
@@ -378,16 +441,18 @@ void UmbriferaApp::RenderFrame() {
             NSUInteger srcH = m_RawTexture.height;
             float imgAspect = (float)srcW / (float)srcH;
             
-            // Calculate scale factor to ensure rotated image covers original bounds
-            float absAngle = fabsf(angleRad);
+            // Calculate scale factor for the largest inscribed rectangle
+            // When rotating a W×H rectangle by θ, the largest axis-aligned rectangle
+            // with the same aspect ratio that fits inside has dimensions W/s × H/s where
+            // s = max(|cos θ| + |sin θ|/aspect, |cos θ| + |sin θ|*aspect)
             float scaleFactorW = fabsf(cosA) + fabsf(sinA) / imgAspect;
             float scaleFactorH = fabsf(cosA) + fabsf(sinA) * imgAspect;
-            float rotScale = fmaxf(scaleFactorW, scaleFactorH);
-            if (rotScale < 1.0f) rotScale = 1.0f;
+            float inscribedScale = fmaxf(scaleFactorW, scaleFactorH);
+            if (inscribedScale < 1.0f) inscribedScale = 1.0f;
             
-            // Output texture has the same dimensions as input
-            NSUInteger dstW = srcW;
-            NSUInteger dstH = srcH;
+            // Output texture is smaller - the largest inscribed rectangle
+            NSUInteger dstW = (NSUInteger)((float)srcW / inscribedScale);
+            NSUInteger dstH = (NSUInteger)((float)srcH / inscribedScale);
             
             // Create new rotated texture
             MTLTextureDescriptor* newDesc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Unorm width:dstW height:dstH mipmapped:YES];
@@ -409,7 +474,7 @@ void UmbriferaApp::RenderFrame() {
                 RotateParams params;
                 params.cosAngle = cosA;
                 params.sinAngle = sinA;
-                params.scale = rotScale;
+                params.scale = 1.0f; // No scaling - we're extracting the inscribed rectangle
                 params.srcWidth = (uint32_t)srcW;
                 params.srcHeight = (uint32_t)srcH;
                 
@@ -442,6 +507,8 @@ void UmbriferaApp::RenderFrame() {
                 targetDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
                 m_ProcessedTexture = [m_Device newTextureWithDescriptor:targetDesc];
                 
+                // Regenerate grain for new rotation dimensions
+                m_GrainNeedsRegeneration = true;
                 m_ImageDirty = true;
             }
         }
@@ -596,6 +663,9 @@ void UmbriferaApp::Undo() {
     targetDesc.mipmapLevelCount = mipLevels;
     targetDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
     m_ProcessedTexture = [m_Device newTextureWithDescriptor:targetDesc];
+    
+    // Regenerate grain for new resize dimensions
+    m_GrainNeedsRegeneration = true;
     
     // Reset view
     m_ViewZoom = 1.0f;

@@ -99,12 +99,64 @@ float3 hsv2rgb(float3 c) {
     float3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
     return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
 }
+
+// Helper: RGB Hue Rotation using rotation matrix
+// Rotates hue in RGB space without color space conversion (avoids precision loss)
+// Angle in range [0, 1] where 1 = 360 degrees
+float3 rotate_hue_rgb(float3 rgb, float angle) {
+    // Angle in radians
+    float theta = angle * 6.28318530718; // 2*pi
+    
+    // Rotation axis: (1, 1, 1) normalized
+    float3 axis = normalize(float3(1.0, 1.0, 1.0));
+    
+    // Rodrigues' rotation formula: v_rot = v*cos(θ) + (k × v)*sin(θ) + k*(k·v)*(1-cos(θ))
+    float cosA = cos(theta);
+    float sinA = sin(theta);
+    float oneMinusCos = 1.0 - cosA;
+    
+    // k · v
+    float dotProduct = dot(axis, rgb);
+    
+    // k × v (cross product)
+    float3 cross = float3(
+        axis.y * rgb.z - axis.z * rgb.y,
+        axis.z * rgb.x - axis.x * rgb.z,
+        axis.x * rgb.y - axis.y * rgb.x
+    );
+    
+    // Apply Rodrigues' formula
+    float3 rotated = rgb * cosA + cross * sinA + axis * dotProduct * oneMinusCos;
+    
+    return rotated;
+}
 // Helper: High Quality Hash (Dave Hoskins)
 // Replaces the problematic sine-based rand
 float hash12(float2 p) {
     float3 p3  = fract(float3(p.xyx) * .1031);
     p3 += dot(p3, p3.yzx + 33.33);
     return fract((p3.x + p3.y) * p3.z);
+}
+
+// Hash with 3 input values (for temporal variation)
+float hash13(float3 p) {
+    p = fract(p * float3(0.1031, 0.1030, 0.0973));
+    p += dot(p, p.yxz + 33.33);
+    return fract((p.x + p.y) * p.z);
+}
+
+// Hash returning 3 values (for chromatic grain)
+float3 hash32(float2 p) {
+    float3 p3 = fract(float3(p.xyx) * float3(0.1031, 0.1030, 0.0973));
+    p3 += dot(p3, p3.yxz + 33.33);
+    return fract((p3.xxy + p3.yzz) * p3.zyx);
+}
+
+// Hash with temporal seed returning 3 values
+float3 hash33(float3 p) {
+    p = fract(p * float3(0.1031, 0.1030, 0.0973));
+    p += dot(p, p.yxz + 33.33);
+    return fract((p.xxy + p.yzz) * p.zyx);
 }
 
 // --- Simplex Noise Implementation ---
@@ -178,14 +230,118 @@ float snoise(float2 v)
   return 130.0 * dot(m, g);
 }
 
+// --- Film Grain Multi-Layer System ---
+// Emulates 35mm negative film grain with physically-based luminance response
+
+// Worley noise (cellular) for clumpy grain structure
+// Returns distance to nearest cell center (F1)
+float worley(float2 p, float time) {
+    float2 ip = floor(p);
+    float2 fp = fract(p);
+    float d = 1.0;
+    
+    // Search 3x3 neighborhood
+    for (int y = -1; y <= 1; y++) {
+        for (int x = -1; x <= 1; x++) {
+            float2 offset = float2(x, y);
+            // Jitter cell center using hash with temporal variation
+            float2 cellCenter = hash32(float2(ip + offset) + time * 0.01).xy;
+            float2 diff = offset + cellCenter - fp;
+            d = min(d, dot(diff, diff));
+        }
+    }
+    return sqrt(d);
+}
+
+// Multi-octave value noise for organic texture
+float valueNoise(float2 p, float time) {
+    float2 ip = floor(p);
+    float2 fp = fract(p);
+    
+    // Smooth interpolation
+    float2 u = fp * fp * (3.0 - 2.0 * fp);
+    
+    // Hash corners with temporal seed
+    float3 seed = float3(ip, time);
+    float a = hash13(seed + float3(0, 0, 0));
+    float b = hash13(seed + float3(1, 0, 0));
+    float c = hash13(seed + float3(0, 1, 0));
+    float d = hash13(seed + float3(1, 1, 0));
+    
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+// Grain generation parameters
+struct GrainParams {
+    uint width;
+    uint height;
+    float grainSize;
+    float seed;  // Random seed for this grain pattern
+};
+
+// Compute shader: Generate film grain texture
+// Generates a static grain pattern that can be overlaid with exposure-weighting at render time
+// Output: RGBA16Float where:
+//   R = Layer A (large grain)
+//   G = Layer B (medium grain)  
+//   B = Layer C (fine grain)
+//   A = Chromatic variation seed
+kernel void generate_grain(
+    texture2d<float, access::write> grainTexture [[texture(0)]],
+    constant GrainParams& params [[buffer(0)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    if (gid.x >= params.width || gid.y >= params.height) return;
+    
+    float2 uv = float2(gid) / float2(params.width, params.height);
+    float2 scaledUV = float2(gid) * params.grainSize;
+    float seed = params.seed;
+    
+    // === Layer A: Large, soft "base" grain ===
+    // Represents largest silver-halide crystals in slower emulsion layers
+    float worleyNoise = worley(scaledUV * 0.08, seed);
+    float layerA = valueNoise(scaledUV * 0.1, seed) * 0.5 + 0.5;
+    layerA = layerA * 0.7 + worleyNoise * 0.3;
+    layerA = (layerA - 0.5) * 2.0; // Center around 0, range ~[-1, 1]
+    
+    // === Layer B: Medium grain (main visible 35mm grain) ===
+    float snoise1 = snoise(scaledUV * 0.25 + seed * 100.0) * 0.5;
+    float snoise2 = snoise(scaledUV * 0.35 - seed * 50.0) * 0.35;
+    float layerB = snoise1 + snoise2; // Range ~[-0.85, 0.85]
+    
+    // === Layer C: Fine grain / chemical speckling ===
+    float3 fineHash = hash33(float3(scaledUV, seed));
+    float layerC = (fineHash.x - 0.5) * 2.0;
+    float3 fineHash2 = hash33(float3(scaledUV + float2(0.5, 0.0), seed));
+    float3 fineHash3 = hash33(float3(scaledUV + float2(0.0, 0.5), seed));
+    layerC = layerC * 0.6 + (fineHash2.x + fineHash3.x - 1.0) * 0.4; // Range ~[-1, 1]
+    
+    // === Chromatic variation seed ===
+    // Store a hash value that will be used to derive chromatic offsets at render time
+    float chromaSeed = hash13(float3(scaledUV * 0.5, seed + 100.0));
+    
+    // Normalize layers to [0, 1] range for storage (will be unpacked in fragment shader)
+    // Layer A, B, C are in ~[-1, 1], map to [0, 1]
+    float4 grainData = float4(
+        layerA * 0.5 + 0.5,  // Large grain
+        layerB * 0.5 + 0.5,  // Medium grain
+        layerC * 0.5 + 0.5,  // Fine grain
+        chromaSeed           // Chromatic seed
+    );
+    
+    grainTexture.write(grainData, gid);
+}
+
 // Fragment Shader
 // Runs for every pixel on the screen.
 // It reads the input image, applies exposure, and outputs the color.
 fragment float4 fragment_main(VertexOut in [[stage_in]], 
                             constant Uniforms& uniforms [[buffer(0)]],
-                            texture2d<float> inputTexture [[texture(0)]]) {
+                            texture2d<float> inputTexture [[texture(0)]],
+                            texture2d<float> grainTexture [[texture(1)]]) {
     constexpr sampler textureSampler (mag_filter::linear, min_filter::linear, address::clamp_to_zero);
     constexpr sampler mipSampler (mag_filter::linear, min_filter::linear, mip_filter::linear, address::clamp_to_edge);
+    constexpr sampler grainSampler (mag_filter::nearest, min_filter::nearest, address::repeat);
     
     // 1. Sample the texture
     // The input texture is 16-bit Linear RGB (from LibRaw)
@@ -361,9 +517,13 @@ fragment float4 fragment_main(VertexOut in [[stage_in]],
         if (total_weight > 0.001) {
             float4 adj = total_adj / total_weight;
             
-            // Apply Hue Shift
-            hsv.x += adj.x;
-            hsv.x = fract(hsv.x);
+            // Apply Hue Shift using RGB rotation (avoids precision loss)
+            if (abs(adj.x) > 0.001) {
+                color.rgb = rotate_hue_rgb(color.rgb, adj.x);
+            }
+            
+            // Recalculate HSV after hue rotation
+            hsv = rgb2hsv(color.rgb);
             
             // Apply Saturation Shift
             hsv.y = saturate(hsv.y + adj.y);
@@ -376,11 +536,9 @@ fragment float4 fragment_main(VertexOut in [[stage_in]],
     }
     
     // Hue Offset (Global)
+    // Uses RGB-space rotation to avoid precision loss from color space conversion
     if (abs(uniforms.hue_offset) > 0.001) {
-        float3 hsv = rgb2hsv(color.rgb);
-        hsv.x += uniforms.hue_offset;
-        hsv.x = fract(hsv.x);
-        color.rgb = hsv2rgb(hsv);
+        color.rgb = rotate_hue_rgb(color.rgb, uniforms.hue_offset);
     }
     
     // Contrast
@@ -466,8 +624,60 @@ fragment float4 fragment_main(VertexOut in [[stage_in]],
     
     color.rgb *= vignette;
     
-    // Film Grain
-    // (Disabled per user request)
+    // Film Grain (35mm Negative Film Emulation)
+    // Uses pre-computed grain texture with exposure-weighted overlay
+    if (uniforms.grain_amount > 0.001) {
+        // Sample pre-computed grain texture
+        // The grain texture tiles across the image at 1:1 pixel ratio
+        float2 grainUV = in.uv * float2(inputTexture.get_width(), inputTexture.get_height()) 
+                       / float2(grainTexture.get_width(), grainTexture.get_height());
+        float4 grainData = grainTexture.sample(grainSampler, grainUV);
+        
+        // Unpack grain layers from [0,1] back to [-1,1] range
+        float layerA = (grainData.r - 0.5) * 2.0;  // Large grain
+        float layerB = (grainData.g - 0.5) * 2.0;  // Medium grain
+        float layerC = (grainData.b - 0.5) * 2.0;  // Fine grain
+        float chromaSeed = grainData.a;
+        
+        // === Exposure-weighted grain response (computed at render time) ===
+        // This allows adjustments to exposure/contrast to affect grain visibility
+        float grainLuma = dot(color.rgb, float3(0.2126, 0.7152, 0.0722));
+        float percLuma = pow(saturate(grainLuma), 1.0/2.2);
+        
+        // Shadow boost increases with amount (higher ISO = grainier shadows)
+        float shadowBoost = mix(1.0, 1.8, uniforms.grain_amount);
+        // Grain response curve: strong in shadows, falls off in highlights
+        float grainResponse = pow(1.0 - percLuma, 1.5) * shadowBoost;
+        // Add baseline so midtones still have some grain
+        grainResponse = mix(0.3, grainResponse, smoothstep(0.0, 0.5, 1.0 - percLuma));
+        // Reduce grain in pure highlights
+        grainResponse *= smoothstep(1.0, 0.85, percLuma);
+        
+        // === Layer weighting based on amount ===
+        float wA = mix(0.15, 0.35, uniforms.grain_amount);
+        float wB = mix(0.35, 0.45, uniforms.grain_amount);
+        float wC = mix(0.50, 0.20, uniforms.grain_amount);
+        
+        // Combine layers with weights
+        float grainMono = layerA * wA + layerB * wB + layerC * wC;
+        grainMono *= grainResponse;
+        
+        // Grain intensity scaling
+        float grainStrength = uniforms.grain_amount * 0.15;
+        
+        // Apply monochrome grain
+        color.rgb += grainMono * grainStrength;
+        
+        // === Chromatic grain from seed ===
+        // Derive subtle color offsets from the chromaSeed
+        float chromaAmount = mix(0.01, 0.04, uniforms.grain_amount);
+        float3 chromaOffset;
+        chromaOffset.r = (fract(chromaSeed * 127.1) - 0.5) * 2.0 * chromaAmount;
+        chromaOffset.g = (fract(chromaSeed * 269.5) - 0.5) * 2.0 * chromaAmount * 0.8;
+        chromaOffset.b = (fract(chromaSeed * 419.2) - 0.5) * 2.0 * chromaAmount * 0.9;
+        
+        color.rgb += chromaOffset * grainResponse * grainStrength;
+    }
     
     // --- 5. Tone Mapping ---
     // Tone Mapping (Standard Gamma only)
