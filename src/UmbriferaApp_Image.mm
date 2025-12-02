@@ -56,6 +56,10 @@ void UmbriferaApp::LoadRawImage(const std::string& path) {
             // output_bps = 16: We want 16-bit data for high precision (better than 8-bit JPEG).
             RawProcessor->imgdata.params.output_bps = 16;
             
+            // user_qual = 11: Use DHT (Damped Hybrid Transform) demosaicing.
+            // DHT produces the highest quality results with minimal artifacts.
+            RawProcessor->imgdata.params.user_qual = 11;
+            
             // no_auto_bright = 1: Don't automatically brighten the image. We want control.
             RawProcessor->imgdata.params.no_auto_bright = 1;
             

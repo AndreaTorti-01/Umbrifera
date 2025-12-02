@@ -7,7 +7,7 @@ This document details the complete image processing pipeline of Umbrifera, from 
 The application uses `LibRaw` to decode raw image files (NEF, CR2, RAF, etc.). The goal is to extract the rawest possible data in a linear color space to allow for full control in the GPU shader.
 
 *   **File Handling**: The file is opened using `LibRaw::open_file`.
-*   **Demosaicing**: `LibRaw::dcraw_process()` is called. By default, this uses **AHD (Adaptive Homogeneity-Directed)** interpolation for high-quality results.
+*   **Demosaicing**: `LibRaw::dcraw_process()` is called with `user_qual = 11`, which uses **DHT (Damped Hybrid Transform)** interpolation for the highest quality results with minimal artifacts.
 *   **Color Space**:
     *   `output_color = 1` (sRGB).
     *   `gamm = {1.0, 1.0}` (Linear).

@@ -808,7 +808,7 @@ void UmbriferaApp::RenderUI() {
             ImVec2 mousePos = io.MousePos;
             float hitRadius = UIConfig::CROP_CORNER_HIT_RADIUS;
             
-            // Check if mouse is over a corner
+            // Check if mouse is over a corner (0=TL, 1=TR, 2=BR, 3=BL)
             int hoveredCorner = -1;
             for (int i = 0; i < 4; i++) {
                 float dx = mousePos.x - corners[i].x;
@@ -816,6 +816,32 @@ void UmbriferaApp::RenderUI() {
                 if (dx*dx + dy*dy < hitRadius*hitRadius) {
                     hoveredCorner = i;
                     break;
+                }
+            }
+            
+            // Check if mouse is over an edge (5=top, 6=right, 7=bottom, 8=left)
+            int hoveredEdge = -1;
+            if (hoveredCorner < 0) {
+                float edgeHitDist = hitRadius * 0.7f;
+                // Top edge
+                if (mousePos.x > cropLeft + hitRadius && mousePos.x < cropRight - hitRadius &&
+                    fabsf(mousePos.y - cropTop) < edgeHitDist) {
+                    hoveredEdge = 5;
+                }
+                // Right edge
+                else if (mousePos.y > cropTop + hitRadius && mousePos.y < cropBottom - hitRadius &&
+                         fabsf(mousePos.x - cropRight) < edgeHitDist) {
+                    hoveredEdge = 6;
+                }
+                // Bottom edge
+                else if (mousePos.x > cropLeft + hitRadius && mousePos.x < cropRight - hitRadius &&
+                         fabsf(mousePos.y - cropBottom) < edgeHitDist) {
+                    hoveredEdge = 7;
+                }
+                // Left edge
+                else if (mousePos.y > cropTop + hitRadius && mousePos.y < cropBottom - hitRadius &&
+                         fabsf(mousePos.x - cropLeft) < edgeHitDist) {
+                    hoveredEdge = 8;
                 }
             }
             
@@ -827,6 +853,9 @@ void UmbriferaApp::RenderUI() {
             if (isHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                 if (hoveredCorner >= 0) {
                     m_CropDragCorner = hoveredCorner;
+                    m_CropDragging = true;
+                } else if (hoveredEdge >= 0) {
+                    m_CropDragCorner = hoveredEdge;
                     m_CropDragging = true;
                 } else if (insideCropRect) {
                     m_CropDragCorner = 4; // Move whole rect
@@ -870,7 +899,40 @@ void UmbriferaApp::RenderUI() {
                     if (m_CropRect[1] < 0.0f) { m_CropRect[1] = 0.0f; m_CropRect[3] = rectH; }
                     if (m_CropRect[2] > 1.0f) { m_CropRect[2] = 1.0f; m_CropRect[0] = 1.0f - rectW; }
                     if (m_CropRect[3] > 1.0f) { m_CropRect[3] = 1.0f; m_CropRect[1] = 1.0f - rectH; }
-                } else {
+                } else if (m_CropDragCorner >= 5 && m_CropDragCorner <= 8) {
+                    // Edge resize (5=top, 6=right, 7=bottom, 8=left)
+                    int edge = m_CropDragCorner;
+                    switch (edge) {
+                        case 5: // Top edge
+                            m_CropRect[1] += deltaY;
+                            break;
+                        case 6: // Right edge
+                            m_CropRect[2] += deltaX;
+                            break;
+                        case 7: // Bottom edge
+                            m_CropRect[3] += deltaY;
+                            break;
+                        case 8: // Left edge
+                            m_CropRect[0] += deltaX;
+                            break;
+                    }
+                    
+                    // Clamp to image bounds
+                    if (m_CropRect[0] < 0.0f) m_CropRect[0] = 0.0f;
+                    if (m_CropRect[1] < 0.0f) m_CropRect[1] = 0.0f;
+                    if (m_CropRect[2] > 1.0f) m_CropRect[2] = 1.0f;
+                    if (m_CropRect[3] > 1.0f) m_CropRect[3] = 1.0f;
+                    
+                    // Enforce minimum size
+                    if (m_CropRect[2] - m_CropRect[0] < 0.05f) {
+                        if (edge == 8) m_CropRect[0] = m_CropRect[2] - 0.05f;
+                        else if (edge == 6) m_CropRect[2] = m_CropRect[0] + 0.05f;
+                    }
+                    if (m_CropRect[3] - m_CropRect[1] < 0.05f) {
+                        if (edge == 5) m_CropRect[1] = m_CropRect[3] - 0.05f;
+                        else if (edge == 7) m_CropRect[3] = m_CropRect[1] + 0.05f;
+                    }
+                } else if (m_CropDragCorner >= 0 && m_CropDragCorner <= 3) {
                     // Resize from corner
                     int corner = m_CropDragCorner;
                     
@@ -1047,8 +1109,19 @@ void UmbriferaApp::RenderUI() {
             }
             
             // Set cursor based on what's being hovered/dragged
-            if (hoveredCorner >= 0 || (m_CropDragging && m_CropDragCorner >= 0 && m_CropDragCorner < 4)) {
-                ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+            int activeHandle = m_CropDragging ? m_CropDragCorner : (hoveredCorner >= 0 ? hoveredCorner : hoveredEdge);
+            if (activeHandle == 0 || activeHandle == 2) {
+                // Top-left or Bottom-right corner: NW-SE diagonal
+                ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNWSE);
+            } else if (activeHandle == 1 || activeHandle == 3) {
+                // Top-right or Bottom-left corner: NE-SW diagonal
+                ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNESW);
+            } else if (activeHandle == 5 || activeHandle == 7) {
+                // Top or Bottom edge: vertical resize
+                ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+            } else if (activeHandle == 6 || activeHandle == 8) {
+                // Right or Left edge: horizontal resize
+                ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
             } else if (insideCropRect || (m_CropDragging && m_CropDragCorner == 4)) {
                 ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
             }
@@ -1159,8 +1232,8 @@ void UmbriferaApp::RenderUI() {
         // Handle Input
         ImGuiIO& io = ImGui::GetIO();
         
-        // Zoom (disabled in crop mode or while rotating)
-        if (!m_CropMode && !m_ArbitraryRotateDragging && isHovered && io.MouseWheel != 0.0f) {
+        // Zoom (disabled while rotating, enabled in crop mode)
+        if (!m_ArbitraryRotateDragging && isHovered && io.MouseWheel != 0.0f) {
             float zoomSpeed = 0.1f;
             float oldZoom = m_ViewZoom;
             float newZoom = oldZoom + io.MouseWheel * zoomSpeed * oldZoom;
@@ -1236,7 +1309,7 @@ void UmbriferaApp::RenderUI() {
                     m_CropRatioIndex = 0;
                     m_CropRect[0] = 0.0f; m_CropRect[1] = 0.0f;
                     m_CropRect[2] = 1.0f; m_CropRect[3] = 1.0f;
-                    m_ViewZoom = 1.0f;
+                    m_ViewZoom = 0.85f; // Reduced zoom to make crop handles easier to grab
                     m_ViewOffset[0] = 0.0f;
                     m_ViewOffset[1] = 0.0f;
                 }
