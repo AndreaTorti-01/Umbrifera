@@ -26,6 +26,9 @@ public:
     
     // Set Logo
     void SetLogo(id<MTLTexture> logo);
+    
+    // Disk cache management
+    void ClearThumbnailCache();
 
 private:
     void RenderDirectory(const std::filesystem::path& path);
@@ -54,6 +57,8 @@ private:
     };
     std::map<std::string, ThumbnailInfo> m_Thumbnails;
     std::mutex m_ThumbnailMutex;
+    // Disk cache directory for thumbnails
+    std::string m_CacheDir;
 
     // Folder Icons
     id<MTLTexture> m_FolderOpenTexture = nil;

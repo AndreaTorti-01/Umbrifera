@@ -323,6 +323,7 @@ void UmbriferaApp::UpdateUniforms() {
 - (void)resetLayout:(id)sender;
 - (void)resizeImage:(id)sender;
 - (void)toggleButtonBarPosition:(id)sender;
+ - (void)resetThumbnailsCache:(id)sender;
 @end
 
 void UmbriferaApp::OpenExportDialog(const std::string& format) {
@@ -446,6 +447,12 @@ void UmbriferaApp::LoadSidecar() {
         // No sidecar exists, apply Auto settings
         CalculateAutoSettings();
         SaveSidecar(); // Save the auto-calculated values
+    }
+}
+
+void UmbriferaApp::ResetThumbnailsCache() {
+    if (m_FileNavigator) {
+        m_FileNavigator->ClearThumbnailCache();
     }
 }
 
@@ -734,6 +741,11 @@ Uniforms UmbriferaApp::GetDefaultUniforms() const {
         [item setState:_app->m_ButtonBarAtTop ? NSControlStateValueOn : NSControlStateValueOff];
     }
 }
+ - (void)resetThumbnailsCache:(id)sender {
+    if (_app) {
+        _app->ResetThumbnailsCache();
+    }
+}
 @end
 
 static MenuHandler* g_MenuHandler = nil;
@@ -789,6 +801,14 @@ void UmbriferaApp::SetupMacOSMenu() {
     
     NSMenuItem* resizeItem = [toolsMenu addItemWithTitle:@"Resize" action:@selector(resizeImage:) keyEquivalent:@""];
     [resizeItem setTarget:g_MenuHandler];
+
+    // 5. More Menu (Reset cache, misc)
+    NSMenuItem* moreMenuItem = [mainMenu addItemWithTitle:@"More" action:nil keyEquivalent:@""];
+    NSMenu* moreMenu = [[NSMenu alloc] initWithTitle:@"More"];
+    [moreMenuItem setSubmenu:moreMenu];
+
+    NSMenuItem* resetThumbs = [moreMenu addItemWithTitle:@"Reset Thumbnails Cache" action:@selector(resetThumbnailsCache:) keyEquivalent:@""];
+    [resetThumbs setTarget:g_MenuHandler];
 }
 
 void UmbriferaApp::UpdateMacOSMenu() {

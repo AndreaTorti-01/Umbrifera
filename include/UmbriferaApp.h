@@ -76,6 +76,8 @@ public:
     void OpenExportDialog(const std::string& format);
     void LoadRawImage(const std::string& path);
     void OpenResizeDialog();
+    // Reset thumbnail cache (menu action)
+    void ResetThumbnailsCache();
 
 public:
     bool m_ResetLayoutRequested = false; // Public so menu handler can access it

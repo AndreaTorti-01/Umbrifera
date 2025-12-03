@@ -3,9 +3,11 @@
 #include "imgui_internal.h"
 #include <iostream>
 #include <algorithm>
+#include <chrono>
 #include <jpeglib.h>
 #include <CoreGraphics/CoreGraphics.h>
 #include <ImageIO/ImageIO.h>
+#include <ImageIO/CGImageDestination.h>
 #include <Cocoa/Cocoa.h>
 
 // Helper to load texture from asset
@@ -45,6 +47,32 @@ static id<MTLTexture> LoadTextureFromAsset(id<MTLDevice> device, const std::stri
     [texture replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0 withBytes:rawData.data() bytesPerRow:width * 4];
     
     return texture;
+}
+
+void FileNavigator::ClearThumbnailCache() {
+    // Clear in-memory thumbnails
+    {
+        std::lock_guard<std::mutex> lock(m_ThumbnailMutex);
+        for (auto &kv : m_Thumbnails) {
+            kv.second.texture = nil;
+            kv.second.isLoaded = false;
+            kv.second.isLoading = false;
+        }
+        m_Thumbnails.clear();
+    }
+
+    // Delete cache directory on disk
+    if (!m_CacheDir.empty()) {
+        try {
+            std::filesystem::remove_all(m_CacheDir);
+            std::filesystem::create_directories(m_CacheDir);
+        } catch (...) {
+            // ignore errors
+        }
+    }
+
+    // Wake loader thread in case it's waiting
+    m_QueueCV.notify_all();
 }
 
 // Helper to decode JPEG from memory to RGBA
@@ -182,6 +210,93 @@ static bool IsRawImageFile(const std::filesystem::path& path) {
     return extensions.find(ext) != extensions.end();
 }
 
+// Helper: compute cache filename for a given path and file metadata
+static std::string CacheFilePathFor(const std::string& srcPath, const std::string& cacheDir) {
+    try {
+        std::error_code ec;
+        auto ftime = std::filesystem::last_write_time(srcPath, ec);
+        uint64_t ts = 0;
+        if (!ec) {
+            ts = (uint64_t)std::chrono::duration_cast<std::chrono::seconds>(ftime.time_since_epoch()).count();
+        }
+        uint64_t size = 0;
+        if (!ec) size = std::filesystem::file_size(srcPath, ec);
+
+        // combine hash of path + size + timestamp
+        std::string key = srcPath + "|" + std::to_string(size) + "|" + std::to_string(ts);
+        std::hash<std::string> hasher;
+        size_t h = hasher(key);
+        char buf[64];
+        snprintf(buf, sizeof(buf), "%zx.png", h);
+        return cacheDir + "/" + std::string(buf);
+    } catch (...) {
+        // Fallback: just hash path
+        std::hash<std::string> hasher;
+        size_t h = hasher(srcPath);
+        char buf[64];
+        snprintf(buf, sizeof(buf), "%zx.png", h);
+        return cacheDir + "/" + std::string(buf);
+    }
+}
+
+// Save RGBA buffer to PNG file using ImageIO
+static bool SaveRgbaToPngFile(const uint8_t* rgba, int width, int height, const std::string& outPath) {
+    @autoreleasepool {
+        CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+        CGBitmapInfo bitmapInfo = (CGBitmapInfo)((uint32_t)kCGImageAlphaPremultipliedLast | (uint32_t)kCGBitmapByteOrder32Big);
+        CGContextRef ctx = CGBitmapContextCreate((void*)rgba, width, height, 8, width * 4, colorSpace, bitmapInfo);
+        if (!ctx) {
+            CGColorSpaceRelease(colorSpace);
+            return false;
+        }
+
+        CGImageRef image = CGBitmapContextCreateImage(ctx);
+        CGContextRelease(ctx);
+        CGColorSpaceRelease(colorSpace);
+        if (!image) return false;
+
+        NSURL* url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:outPath.c_str()]];
+        CGImageDestinationRef dest = CGImageDestinationCreateWithURL((__bridge CFURLRef)url, CFSTR("public.png"), 1, NULL);
+        if (!dest) {
+            CGImageRelease(image);
+            return false;
+        }
+        CGImageDestinationAddImage(dest, image, NULL);
+        bool ok = CGImageDestinationFinalize(dest);
+        CFRelease(dest);
+        CGImageRelease(image);
+        return ok;
+    }
+}
+
+// Load PNG/other raster image to RGBA buffer
+static std::vector<uint8_t> LoadImageFileToRgba(const std::string& path, int* outWidth, int* outHeight) {
+    NSURL* url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path.c_str()]];
+    CGImageSourceRef source = CGImageSourceCreateWithURL((__bridge CFURLRef)url, NULL);
+    if (!source) return {};
+    CGImageRef image = CGImageSourceCreateImageAtIndex(source, 0, NULL);
+    CFRelease(source);
+    if (!image) return {};
+    size_t width = CGImageGetWidth(image);
+    size_t height = CGImageGetHeight(image);
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    std::vector<uint8_t> rawData(width * height * 4);
+    CGBitmapInfo bitmapInfo = (CGBitmapInfo)((uint32_t)kCGImageAlphaPremultipliedLast | (uint32_t)kCGBitmapByteOrder32Big);
+    CGContextRef context = CGBitmapContextCreate(rawData.data(), width, height, 8, width * 4, colorSpace, bitmapInfo);
+    if (!context) {
+        CGImageRelease(image);
+        CGColorSpaceRelease(colorSpace);
+        return {};
+    }
+    CGContextDrawImage(context, CGRectMake(0, 0, width, height), image);
+    CGContextRelease(context);
+    CGColorSpaceRelease(colorSpace);
+    CGImageRelease(image);
+    *outWidth = (int)width;
+    *outHeight = (int)height;
+    return rawData;
+}
+
 FileNavigator::FileNavigator() {
     // Default to user home directory
     const char* homeDir = getenv("HOME");
@@ -191,6 +306,16 @@ FileNavigator::FileNavigator() {
         m_RootPath = std::filesystem::current_path();
     }
     m_PathBuffer = m_RootPath.string();
+
+    // Setup cache directory in macOS user caches folder
+    if (homeDir) {
+        m_CacheDir = std::string(homeDir) + "/Library/Caches/Umbrifera/thumbnails";
+        try {
+            std::filesystem::create_directories(m_CacheDir);
+        } catch (...) {
+            // ignore
+        }
+    }
 }
 
 FileNavigator::~FileNavigator() {
@@ -503,18 +628,27 @@ id<MTLTexture> FileNavigator::GetThumbnail(const std::filesystem::path& path) {
     std::lock_guard<std::mutex> lock(m_ThumbnailMutex);
     auto it = m_Thumbnails.find(pathStr);
     if (it != m_Thumbnails.end()) {
+        // If we have an entry but texture is not set and not currently loading, schedule load
+        if (it->second.texture == nil && !it->second.isLoading) {
+            it->second.isLoading = true;
+            QueueThumbnailLoad(path);
+        }
         return it->second.texture;
     }
-    
-    // Not found, queue it
-    m_Thumbnails[pathStr] = {nil, true, false}; // Mark as loading
+
+    // Not found, create placeholder and queue it
+    m_Thumbnails[pathStr] = {nil, true, false}; // isLoading=true, isLoaded=false
     QueueThumbnailLoad(path);
-    
+
     return nil;
 }
 
 void FileNavigator::QueueThumbnailLoad(const std::filesystem::path& path) {
     std::lock_guard<std::mutex> lock(m_QueueMutex);
+    // Avoid duplicate entries in queue
+    for (const auto& p : m_LoadQueue) {
+        if (p == path) return;
+    }
     m_LoadQueue.push_back(path);
     m_QueueCV.notify_one();
 }
@@ -533,53 +667,80 @@ void FileNavigator::ThumbnailLoaderThread() {
             m_LoadQueue.erase(m_LoadQueue.begin());
         }
         
-        // Load Thumbnail with orientation support
-        auto RawProcessor = std::make_unique<LibRaw>();
+        // Attempt to load from disk cache first
         id<MTLTexture> texture = nil;
-        
-        if (RawProcessor->open_file(path.c_str()) == LIBRAW_SUCCESS) {
-            // Get EXIF orientation (flip is a bitmask, we need to extract orientation)
-            int orientation = RawProcessor->imgdata.sizes.flip;
-            // LibRaw flip values: 0=none, 3=180°, 5=90°CCW, 6=90°CW
-            // Map to standard EXIF: 1=normal, 3=180°, 6=90°CW, 8=90°CCW
-            int exifOrientation = 1;
-            if (orientation == 3) exifOrientation = 3;      // 180°
-            else if (orientation == 5) exifOrientation = 8; // 90° CCW
-            else if (orientation == 6) exifOrientation = 6; // 90° CW
-            
-            if (RawProcessor->unpack_thumb() == LIBRAW_SUCCESS) {
-                libraw_processed_image_t* thumb = RawProcessor->dcraw_make_mem_thumb();
-                if (thumb) {
-                    if (thumb->type == LIBRAW_IMAGE_JPEG) {
-                        int width, height;
-                        std::vector<uint8_t> rgba = DecodeJpegToRgba((const uint8_t*)thumb->data, thumb->data_size, &width, &height);
-                        
-                        if (!rgba.empty() && m_Device) {
-                            // Apply rotation based on orientation
-                            int finalWidth, finalHeight;
-                            std::vector<uint8_t> rotated = RotateRgbaByOrientation(rgba, width, height, exifOrientation, &finalWidth, &finalHeight);
-                            
-                            @autoreleasepool {
-                                MTLTextureDescriptor* desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:finalWidth height:finalHeight mipmapped:NO];
-                                texture = [m_Device newTextureWithDescriptor:desc];
-                                
-                                MTLRegion region = MTLRegionMake2D(0, 0, finalWidth, finalHeight);
-                                [texture replaceRegion:region mipmapLevel:0 withBytes:rotated.data() bytesPerRow:finalWidth * 4];
+        std::string srcPath = path.string();
+        std::string cachePath = "";
+        if (!m_CacheDir.empty()) {
+            cachePath = CacheFilePathFor(srcPath, m_CacheDir);
+        }
+
+        bool loadedFromCache = false;
+        if (!cachePath.empty() && std::filesystem::exists(cachePath)) {
+            int w = 0, h = 0;
+            std::vector<uint8_t> rgba = LoadImageFileToRgba(cachePath, &w, &h);
+            if (!rgba.empty() && m_Device) {
+                @autoreleasepool {
+                    MTLTextureDescriptor* desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:w height:h mipmapped:NO];
+                    texture = [m_Device newTextureWithDescriptor:desc];
+                    MTLRegion region = MTLRegionMake2D(0, 0, w, h);
+                    [texture replaceRegion:region mipmapLevel:0 withBytes:rgba.data() bytesPerRow:w * 4];
+                }
+                loadedFromCache = true;
+            }
+        }
+
+        if (!loadedFromCache) {
+            // Load Thumbnail with orientation support from RAW
+            auto RawProcessor = std::make_unique<LibRaw>();
+            if (RawProcessor->open_file(path.c_str()) == LIBRAW_SUCCESS) {
+                int orientation = RawProcessor->imgdata.sizes.flip;
+                int exifOrientation = 1;
+                if (orientation == 3) exifOrientation = 3;
+                else if (orientation == 5) exifOrientation = 8;
+                else if (orientation == 6) exifOrientation = 6;
+
+                if (RawProcessor->unpack_thumb() == LIBRAW_SUCCESS) {
+                    libraw_processed_image_t* thumb = RawProcessor->dcraw_make_mem_thumb();
+                    if (thumb) {
+                        if (thumb->type == LIBRAW_IMAGE_JPEG) {
+                            int width, height;
+                            std::vector<uint8_t> rgba = DecodeJpegToRgba((const uint8_t*)thumb->data, thumb->data_size, &width, &height);
+                            if (!rgba.empty() && m_Device) {
+                                int finalWidth, finalHeight;
+                                std::vector<uint8_t> rotated = RotateRgbaByOrientation(rgba, width, height, exifOrientation, &finalWidth, &finalHeight);
+
+                                @autoreleasepool {
+                                    MTLTextureDescriptor* desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:finalWidth height:finalHeight mipmapped:NO];
+                                    texture = [m_Device newTextureWithDescriptor:desc];
+                                    MTLRegion region = MTLRegionMake2D(0, 0, finalWidth, finalHeight);
+                                    [texture replaceRegion:region mipmapLevel:0 withBytes:rotated.data() bytesPerRow:finalWidth * 4];
+                                }
+
+                                // Save to cache asynchronously (best-effort)
+                                if (!cachePath.empty()) {
+                                    try {
+                                        SaveRgbaToPngFile(rotated.data(), finalWidth, finalHeight, cachePath);
+                                    } catch (...) {
+                                        // ignore cache write failures
+                                    }
+                                }
                             }
                         }
+                        LibRaw::dcraw_clear_mem(thumb);
                     }
-                    LibRaw::dcraw_clear_mem(thumb);
                 }
+                RawProcessor->recycle();
             }
-            RawProcessor->recycle();
         }
-        
-        // Update Cache
+
+        // Update Cache (in-memory)
         {
             std::lock_guard<std::mutex> lock(m_ThumbnailMutex);
-            m_Thumbnails[path.string()].texture = texture;
-            m_Thumbnails[path.string()].isLoaded = true;
-            m_Thumbnails[path.string()].isLoading = false;
+            auto &info = m_Thumbnails[path.string()];
+            info.texture = texture;
+            info.isLoaded = (texture != nil);
+            info.isLoading = false;
         }
     }
 }
