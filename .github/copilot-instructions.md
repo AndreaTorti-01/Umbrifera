@@ -3,22 +3,75 @@
 ## Project Overview
 Umbrifera is a professional RAW image processing application built with Metal (macOS), ImGui, LibRaw, and GLFW. It features real-time GPU-accelerated image processing with a comprehensive set of adjustment tools.
 
+## Feature Implementation Guidelines
+
+> [!CRITICAL]
+> **Before implementing any feature:**
+> 1. Check if the feature is listed in the **Planned Features** section of `README.md`
+> 2. If it is listed there, read the full specification carefully
+> 3. If ANY aspect of the feature is ambiguous or undefined, **ASK FOR CLARIFICATION** before proceeding
+> 4. Every implementation detail must be explicit - do not assume behavior
+> 5. **After completing a feature**, remove it from the README's Planned Features section
+
+This ensures all implementations match the user's exact expectations and prevents wasted effort on incorrect implementations.
+
 ## Architecture
 
 ### Core Components
-- **Main Application** (`UmbriferaApp.h/.mm`): Central app logic, state management
-- **UI Rendering** (`UmbriferaApp_UI.mm`): ImGui-based interface with docking
-- **Image Processing** (`UmbriferaApp_Image.mm`): LibRaw integration, image loading
-- **Metal Rendering** (`UmbriferaApp_Render_Metal.mm`): GPU pipeline, histogram computation
-- **Shaders** (`shaders/Shaders.metal`): Metal shader code for image processing
-- **File Navigator** (`FileNavigator.h/.mm`): Thumbnail browser for RAW files
+- **Main Application** (`UmbriferaApp.h/.mm`): Central app logic, state management, initialization
+- **UI Rendering** (`UmbriferaApp_UI.mm`): ImGui-based interface with docking, ~2000 lines handling all panels
+- **Image Processing** (`UmbriferaApp_Image.mm`): LibRaw integration, async image loading, EXIF extraction
+- **Metal Rendering** (`UmbriferaApp_Render_Metal.mm`): GPU pipeline setup, texture management, histogram computation
+- **Shaders** (`shaders/Shaders.metal`): Metal shader code (~850 lines) for all image processing
+- **File Navigator** (`FileNavigator.h/.mm`): Thumbnail browser for RAW files with async loading
+- **UI Config** (`include/UIConfig.h`): Centralized UI constants (spacing, sizes, colors)
+- **UI Helpers** (`include/UIHelpers.h`): Reusable UI patterns and dialog components
+
+### File Structure
+```
+Umbrifera/
+├── include/           # Header files
+│   ├── UmbriferaApp.h     # Main app class with all state
+│   ├── FileNavigator.h    # File browser component
+│   ├── UIConfig.h         # UI constants
+│   └── UIHelpers.h        # UI helper functions
+├── src/               # Implementation files
+│   ├── main.cpp                       # Entry point
+│   ├── UmbriferaApp.mm               # Init, run loop, presets
+│   ├── UmbriferaApp_UI.mm            # All UI rendering
+│   ├── UmbriferaApp_Image.mm         # Image loading, export
+│   ├── UmbriferaApp_Render_Metal.mm  # Metal pipeline
+│   └── FileNavigator.mm              # File browser impl
+├── shaders/
+│   └── Shaders.metal      # All GPU shaders
+├── assets/            # PNG icons and logo
+├── build/             # Build output (generated)
+├── pipeline.md        # Detailed pipeline documentation
+└── README.md          # Project overview and planned features
+```
+
+### State Management
+All application state is in `UmbriferaApp` class:
+- **Image State**: `m_RawTexture`, `m_ProcessedTexture`, `m_GrainTexture`
+- **View State**: `m_ViewZoom`, `m_ViewOffset`, `m_RotationAngle`
+- **Edit State**: `m_Uniforms` (all adjustment parameters)
+- **Mode State**: `m_CropMode`, `m_ArbitraryRotateDragging`
+- **UI State**: `m_ShowExportOptions`, `m_ShowSavePresetDialog`, etc.
+- **Async State**: `m_IsLoading`, `m_IsExporting`, loading threads
 
 ### Key Technologies
 - **Graphics API**: Metal (macOS native GPU)
 - **UI Framework**: Dear ImGui with docking enabled
-- **RAW Decoding**: LibRaw
+- **RAW Decoding**: LibRaw (DHT demosaicing, 16-bit output)
 - **Windowing**: GLFW3
-- **Image Format**: 16-bit RGBA pipeline (linear space)
+- **Image Format**: 16-bit RGBA pipeline (linear sRGB space)
+- **Export**: libjpeg-turbo, libpng, libtiff
+
+### Build System
+- CMake-based with FetchContent for dependencies
+- `./build.sh` - Build the application
+- `./run.sh` - Run the built application
+- Dependencies auto-downloaded: GLFW, ImGui (docking branch), LibRaw
 
 ## UI Design Philosophy
 
@@ -91,17 +144,17 @@ Default layout (can be reset):
 
 ### Shader Architecture (`Shaders.metal`)
 Single-pass fragment shader applies (in order):
-1. Base exposure normalization
-2. White balance (temperature/tint)
-3. Exposure adjustment
-4. Tone curve (highlights/shadows/whites/blacks)
-5. Contrast
-6. Vibrance & Saturation
-7. Hue offset (global)
-8. **HSL adjustments** (15 color zones, Gaussian falloff, preserves HDR)
-9. Vignette
+1. White balance (temperature/tint) - RGB gain multiplication
+2. Exposure adjustment - `color *= 2^(exposure + base_exposure)`
+3. Clarity & Texture - Mipmap-based local contrast enhancement
+4. Vibrance & Saturation - Smart saturation boost
+5. HSL adjustments (15 color zones, Gaussian falloff)
+6. Hue offset (global) - RGB-space Rodrigues rotation
+7. Contrast - Pivot around 0.18 (linear mid-grey)
+8. Tonal controls (Blacks/Shadows/Highlights/Whites) - Gaussian weighted
+9. Vignette - Circular, aspect-ratio corrected
 10. Film grain (35mm multi-layer with pre-computed texture overlay)
-11. Tone mapping (Standard gamma)
+11. Tone mapping (Standard gamma 2.2)
 
 **Critical**: HSL adjustments do NOT use `saturate()` on luminance to preserve HDR data.
 
@@ -114,7 +167,7 @@ Single-pass fragment shader applies (in order):
 
 ### Presets System
 - Stored in `presets.txt` (plain text, pipe-separated key-value pairs)
-- "Default" preset is non-deletable, resets all values, uses ACES tone mapping
+- "Auto" preset calculates optimal values from raw histogram
 - Saved via dialog at bottom of Develop panel
 - **Overwrite behavior**: Separate confirmation dialog replaces save dialog (not nested)
 - Settings serialized via `SerializeUniforms`/`DeserializeUniforms`
@@ -198,10 +251,13 @@ Icons should be PNG format, located in `assets/`:
 - `folder_open_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png`: Open folder button
 - `arrow_shape_up_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png`: Up directory button
 - `folder_24dp_E3E3E3_FILL1_wght400_GRAD0_opsz24.png`, `folder_open_24dp_E3E3E3_FILL1_wght400_GRAD0_opsz24.png`: Navigator tree icons
+- `compare_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png`: Comparison mode button
+- `dropper_eye_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png`: Eyedropper for HSL hue sampling
+- `close_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png`: Close/remove button (X icon)
 
 ---
 
-**Last Updated**: 2025-11-28
+**Last Updated**: 2025-12-07
 **Tip**: Keep this file updated as you work on the application. Document new patterns, gotchas, and architectural decisions.
 
 ### Code Hygiene
