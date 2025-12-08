@@ -40,7 +40,9 @@ struct Uniforms {
     float grain_amount;
     float grain_size;
     float clarity;       // Mid-frequency local contrast
-    float texture_amt;   // High-frequency detail enhancement
+    float denoise_luma;
+    float denoise_chroma;
+    float sharpen_intensity;
     float base_exposure;
     
     // Constants (passed as uniforms for consistency)

@@ -1721,7 +1721,6 @@ void UmbriferaApp::RenderUI() {
     UI_GapSmall();
     
     // Presence: Local Contrast Controls
-    if (SliderWithReset("Texture", &m_Uniforms.texture_amt, -1.0f, 1.0f, 0.0f)) changed = true;
     if (SliderWithReset("Clarity", &m_Uniforms.clarity, -1.0f, 1.0f, 0.0f)) changed = true;
     
     UI_GapSmall();
@@ -1749,6 +1748,14 @@ void UmbriferaApp::RenderUI() {
         }
         ImGui::PopID();
     }
+    
+    UI_Separator();
+    
+    // Detail (Denoise & Sharpen)
+    UI_Header("Detail");
+    if (SliderWithReset("Luma Denoise", &m_Uniforms.denoise_luma, 0.0f, 1.0f, 0.0f)) changed = true;
+    if (SliderWithReset("Chroma Denoise", &m_Uniforms.denoise_chroma, 0.0f, 1.0f, 0.0f)) changed = true;
+    if (SliderWithReset("Sharpening", &m_Uniforms.sharpen_intensity, 0.0f, 1.0f, 0.0f)) changed = true;
     
     UI_Separator();
     

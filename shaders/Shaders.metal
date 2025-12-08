@@ -45,7 +45,9 @@ struct Uniforms {
     float grain_amount;
     float grain_size;
     float clarity;       // Mid-frequency local contrast
-    float texture_amt;   // High-frequency detail enhancement
+    float denoise_luma;
+    float denoise_chroma;
+    float sharpen_intensity;
     float base_exposure;
     
     // Constants
@@ -332,6 +334,139 @@ kernel void generate_grain(
     grainTexture.write(grainData, gid);
 }
 
+// --- Denoise & Sharpen Helpers ---
+
+// RGB to YCbCr (Rec. 709)
+float3 rgb2ycbcr(float3 c) {
+    float y = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+    float cb = (c.b - y) / 1.8556;
+    float cr = (c.r - y) / 1.5748;
+    return float3(y, cb, cr);
+}
+
+// YCbCr to RGB (Rec. 709)
+float3 ycbcr2rgb(float3 c) {
+    float y = c.x;
+    float cb = c.y;
+    float cr = c.z;
+    float r = y + 1.5748 * cr;
+    float g = y - 0.1873 * cb - 0.4681 * cr;
+    float b = y + 1.8556 * cb;
+    return float3(r, g, b);
+}
+
+// Bilateral Filter
+float3 denoise_bilateral(texture2d<float> tex, sampler sam, float2 uv, float sigma_s, float sigma_r) {
+    if (sigma_s < 0.1 || sigma_r < 0.001) return tex.sample(sam, uv).rgb;
+
+    float2 tex_size = float2(tex.get_width(), tex.get_height());
+    float2 pixel_size = 1.0 / tex_size;
+    
+    float3 center_color = tex.sample(sam, uv).rgb;
+    float3 sum_color = 0.0;
+    float sum_weight = 0.0;
+    
+    // Kernel size: 2*sigma_s is usually enough. Clamp to 5x5 (radius 2) for performance.
+    int radius = int(ceil(2.0 * sigma_s));
+    radius = clamp(radius, 1, 2); 
+    
+    for (int x = -radius; x <= radius; x++) {
+        for (int y = -radius; y <= radius; y++) {
+            float2 offset = float2(x, y) * pixel_size;
+            float3 sample_color = tex.sample(sam, uv + offset).rgb;
+            
+            float dist2 = float(x*x + y*y);
+            float spatial_weight = exp(-dist2 / (2.0 * sigma_s * sigma_s));
+            
+            float3 diff = sample_color - center_color;
+            float intensity_diff2 = dot(diff, diff);
+            float range_weight = exp(-intensity_diff2 / (2.0 * sigma_r * sigma_r));
+            
+            float weight = spatial_weight * range_weight;
+            
+            sum_color += sample_color * weight;
+            sum_weight += weight;
+        }
+    }
+    
+    return sum_color / (sum_weight + 0.0001);
+}
+
+// Sparse Bilateral Filter (for Chroma)
+// Uses a 5x5 kernel but with a stride to cover a larger area efficiently
+float3 denoise_chroma_sparse(texture2d<float> tex, sampler sam, float2 uv, float sigma_s, float sigma_r) {
+    if (sigma_s < 0.1 || sigma_r < 0.001) return tex.sample(sam, uv).rgb;
+
+    float2 tex_size = float2(tex.get_width(), tex.get_height());
+    float2 pixel_size = 1.0 / tex_size;
+    
+    // Calculate stride to cover the sigma_s radius with just 5 taps
+    // Radius 2 (5 taps) * stride ~= 2 * sigma_s
+    float stride = max(1.0, sigma_s / 2.0);
+    
+    float3 center_color = tex.sample(sam, uv).rgb;
+    float3 sum_color = 0.0;
+    float sum_weight = 0.0;
+    
+    for (int x = -2; x <= 2; x++) {
+        for (int y = -2; y <= 2; y++) {
+            float2 offset = float2(x, y) * stride * pixel_size;
+            float3 sample_color = tex.sample(sam, uv + offset).rgb;
+            
+            // Spatial weight
+            float dist2 = dot(float2(x, y) * stride, float2(x, y) * stride);
+            float spatial_weight = exp(-dist2 / (2.0 * sigma_s * sigma_s));
+            
+            // Range weight
+            float3 diff = sample_color - center_color;
+            float intensity_diff2 = dot(diff, diff);
+            float range_weight = exp(-intensity_diff2 / (2.0 * sigma_r * sigma_r));
+            
+            float weight = spatial_weight * range_weight;
+            
+            sum_color += sample_color * weight;
+            sum_weight += weight;
+        }
+    }
+    
+    return sum_color / (sum_weight + 0.0001);
+}
+
+// AMD CAS (Contrast Adaptive Sharpening)
+float3 cas_sharpen(texture2d<float> tex, sampler sam, float2 uv, float sharpness) {
+    if (sharpness < 0.01) return tex.sample(sam, uv).rgb;
+
+    float2 tex_size = float2(tex.get_width(), tex.get_height());
+    float2 pixel_size = 1.0 / tex_size;
+    
+    // Fetch cross pattern
+    float3 a = tex.sample(sam, uv + float2(0, -1) * pixel_size).rgb; // Top
+    float3 b = tex.sample(sam, uv + float2(-1, 0) * pixel_size).rgb; // Left
+    float3 e = tex.sample(sam, uv).rgb;                              // Center
+    float3 c = tex.sample(sam, uv + float2(1, 0) * pixel_size).rgb;  // Right
+    float3 d = tex.sample(sam, uv + float2(0, 1) * pixel_size).rgb;  // Bottom
+    
+    // Min and Max (per channel)
+    float3 min_g = min(a, min(b, min(c, min(d, e))));
+    float3 max_g = max(a, max(b, max(c, max(d, e))));
+    
+    // Amount of sharpening
+    // w = -1 / lerp(8, 5, sharpness)
+    float w_val = -1.0 / mix(8.0, 5.0, sharpness);
+    
+    // Soft limit to avoid ringing
+    float3 d_min_g = min_g;
+    float3 d_max_g = 1.0 - max_g;
+    float3 amp = sqrt(min(d_min_g, d_max_g) / (max_g + 0.00001));
+    float3 w = amp * w_val;
+    
+    // Filter
+    float3 rcpWeight = 1.0 / (1.0 + 4.0 * w);
+    float3 col = (a * w + b * w + c * w + d * w + e) * rcpWeight;
+    
+    return max(col, 0.0);
+}
+
 // Fragment Shader
 // Runs for every pixel on the screen.
 // It reads the input image, applies exposure, and outputs the color.
@@ -346,6 +481,79 @@ fragment float4 fragment_main(VertexOut in [[stage_in]],
     // 1. Sample the texture
     // The input texture is 16-bit Linear RGB (from LibRaw)
     float4 color = inputTexture.sample(textureSampler, in.uv);
+    
+    // --- 0. Denoise (Bilateral) ---
+    if (uniforms.denoise_luma > 0.001 || uniforms.denoise_chroma > 0.001) {
+        // Convert to YCbCr
+        float3 ycbcr = rgb2ycbcr(color.rgb);
+        
+        // Denoise Luma
+        if (uniforms.denoise_luma > 0.001) {
+            // Sigma S: Spatial (blur radius). 1.0 to 3.0 pixels.
+            // Sigma R: Range (intensity diff). 0.01 to 0.1 (linear space).
+            float sigma_s = 1.0 + uniforms.denoise_luma * 5.0; // Increased range
+            float sigma_r = 0.001 + uniforms.denoise_luma * 0.05; 
+            
+            float3 denoised_rgb = denoise_bilateral(inputTexture, textureSampler, in.uv, sigma_s, sigma_r);
+            float3 denoised_ycbcr = rgb2ycbcr(denoised_rgb);
+            
+            // Blend Luma
+            ycbcr.x = denoised_ycbcr.x;
+        }
+        
+        // Denoise Chroma
+        if (uniforms.denoise_chroma > 0.001) {
+            // Chroma needs stronger spatial blur, but is less sensitive to detail loss.
+            // Increased significantly to handle blotches
+            float sigma_s = 2.0 + uniforms.denoise_chroma * 20.0; 
+            float sigma_r = 0.01 + uniforms.denoise_chroma * 0.2;
+            
+            // Use Sparse Bilateral Filter for large radius efficiency
+            float3 denoised_rgb = denoise_chroma_sparse(inputTexture, textureSampler, in.uv, sigma_s, sigma_r);
+            float3 denoised_ycbcr = rgb2ycbcr(denoised_rgb);
+            
+            // Blend Chroma
+            ycbcr.y = denoised_ycbcr.y;
+            ycbcr.z = denoised_ycbcr.z;
+        }
+        
+        color.rgb = ycbcr2rgb(ycbcr);
+        // Clamp to avoid out-of-gamut colors causing artifacts later
+        color.rgb = clamp(color.rgb, 0.0, 1.0);
+    }
+    
+    // --- 0.5 Sharpening (Edge-Aware Laplacian with Guided Filter Mask) ---
+    // Applied after Denoise, before WB/Exposure
+    // Single LOD level at 0.7 for balanced fine/medium detail
+    if (uniforms.sharpen_intensity > 0.001) {
+        float maxDim = max(float(inputTexture.get_width()), float(inputTexture.get_height()));
+        float lodOffset = log2(maxDim / 4000.0); // Resolution independence
+        float mipLod = max(0.0, 0.7 + lodOffset);
+        
+        float2 texSize = float2(inputTexture.get_width(), inputTexture.get_height());
+        float2 pixelSize = 1.0 / texSize;
+        
+        // Laplacian: difference between current and next mip level
+        float3 g_i = inputTexture.sample(mipSampler, in.uv, level(mipLod)).rgb;
+        float3 g_i1 = inputTexture.sample(mipSampler, in.uv, level(mipLod + 1.0)).rgb;
+        float3 laplacian = g_i - g_i1;
+        
+        // Edge mask from gradient magnitude
+        float sampleOffset = pow(2.0, mipLod);
+        float3 left = inputTexture.sample(mipSampler, in.uv + float2(-sampleOffset, 0) * pixelSize, level(mipLod)).rgb;
+        float3 right = inputTexture.sample(mipSampler, in.uv + float2(sampleOffset, 0) * pixelSize, level(mipLod)).rgb;
+        float3 up = inputTexture.sample(mipSampler, in.uv + float2(0, -sampleOffset) * pixelSize, level(mipLod)).rgb;
+        float3 down = inputTexture.sample(mipSampler, in.uv + float2(0, sampleOffset) * pixelSize, level(mipLod)).rgb;
+        
+        float edgeStrength = length(right - left) + length(down - up);
+        float edgeMask = 1.0 / (1.0 + edgeStrength / 0.05);
+        float lumaVal = dot(g_i, float3(0.2126, 0.7152, 0.0722));
+        float lumaProtect = smoothstep(0.0, 0.05, lumaVal) * smoothstep(1.0, 0.9, lumaVal);
+        
+        // Apply sharpening
+        color.rgb += laplacian * edgeMask * lumaProtect * uniforms.sharpen_intensity * 4.0;
+        color.rgb = max(color.rgb, 0.0);
+    }
     
     // --- 1. White Balance ---
     // Apply Temp/Tint
@@ -372,12 +580,11 @@ fragment float4 fragment_main(VertexOut in [[stage_in]],
     // Combine user exposure with base exposure (normalization)
     color.rgb *= pow(2.0, uniforms.exposure + uniforms.base_exposure);
     
-    // --- 2.5. Clarity & Texture (Local Contrast Enhancement) ---
-    // Clarity: Mid-frequency contrast (larger structures, ~100-300px radius equivalent)
-    // Texture: High-frequency detail (fine details, ~10-25px radius equivalent)
+    // --- 2.5. Clarity (Local Contrast Enhancement) ---
+    // Mid-frequency contrast (larger structures, ~100-300px radius equivalent)
     // Uses local contrast enhancement preserving color ratios to avoid desaturation
     
-    if (abs(uniforms.clarity) > 0.001 || abs(uniforms.texture_amt) > 0.001) {
+    if (abs(uniforms.clarity) > 0.001) {
         float origLuma = dot(color.rgb, float3(0.2126, 0.7152, 0.0722));
         
         // Calculate LOD offset based on image size for resolution-independent behavior
@@ -386,64 +593,36 @@ fragment float4 fragment_main(VertexOut in [[stage_in]],
         float maxDim = max(float(inputTexture.get_width()), float(inputTexture.get_height()));
         float lodOffset = log2(maxDim / 4000.0);
         
-        // Texture: High-frequency detail extraction
-        // Target ~10-25px blur radius at 4000px image (finer than clarity)
-        if (abs(uniforms.texture_amt) > 0.001) {
-            float textureLod = 2.0 + lodOffset; // ~4px at LOD 2 * 2^offset
-            textureLod = clamp(textureLod, 0.5, 6.0);
-            
-            // Sample blurred version
-            float3 textureBlur = inputTexture.sample(mipSampler, in.uv, level(textureLod)).rgb;
-            
-            // Work in color space: extract detail per channel, apply to each
-            // This preserves hue while enhancing local contrast
-            float3 textureDetail = color.rgb - textureBlur;
-            
-            // Luminance protection: reduce effect in extreme highlights/shadows
-            float lumaProtect = smoothstep(0.0, 0.08, origLuma) * smoothstep(1.2, 0.85, origLuma);
-            float textureStrength = uniforms.texture_amt * 0.7 * lumaProtect;
-            
-            // Apply detail enhancement with soft limiting per channel
-            float3 textureAdjust = textureDetail * textureStrength;
-            textureAdjust = textureAdjust / (1.0 + abs(textureAdjust) * 3.0);
-            
-            // Add back to color - this is luminance-stable because we're adding
-            // the high-frequency component back, not scaling
-            color.rgb += textureAdjust;
-        }
-        
         // Clarity: Mid-frequency structure enhancement
         // Target ~100-300px blur radius at 4000px image
-        if (abs(uniforms.clarity) > 0.001) {
-            float clarityLod = 6.0 + lodOffset; // ~64px at LOD 6 * 2^offset
-            clarityLod = clamp(clarityLod, 3.0, 10.0);
-            
-            // Sample blurred version
-            float3 clarityBlur = inputTexture.sample(mipSampler, in.uv, level(clarityLod)).rgb;
-            
-            // Recalculate current luma after texture adjustment
-            float currentLuma = dot(color.rgb, float3(0.2126, 0.7152, 0.0722));
-            
-            // Work in color space like texture: extract per-channel detail
-            float3 clarityDetail = color.rgb - clarityBlur;
-            
-            // Edge-aware masking: reduce effect near strong edges to minimize halos
-            float detailMagnitude = length(clarityDetail);
-            float edgeMask = 1.0 - smoothstep(0.1, 0.4, detailMagnitude);
-            
-            // Midtone focus: clarity affects midtones more than extremes
-            float midtoneMask = 4.0 * currentLuma * (1.0 - saturate(currentLuma));
-            midtoneMask = pow(midtoneMask, 0.5);
-            
-            float clarityStrength = uniforms.clarity * 0.8 * midtoneMask * (0.3 + 0.7 * edgeMask);
-            
-            // Apply detail enhancement with soft limiting per channel
-            float3 clarityAdjust = clarityDetail * clarityStrength;
-            clarityAdjust = clarityAdjust / (1.0 + abs(clarityAdjust) * 2.0);
-            
-            // Additive approach - luminance stable
-            color.rgb += clarityAdjust;
-        }
+        float clarityLod = 6.0 + lodOffset; // ~64px at LOD 6 * 2^offset
+        clarityLod = clamp(clarityLod, 3.0, 10.0);
+        
+        // Sample blurred version
+        float3 clarityBlur = inputTexture.sample(mipSampler, in.uv, level(clarityLod)).rgb;
+        
+        // Calculate current luma
+        float currentLuma = dot(color.rgb, float3(0.2126, 0.7152, 0.0722));
+        
+        // Work in color space: extract per-channel detail
+        float3 clarityDetail = color.rgb - clarityBlur;
+        
+        // Edge-aware masking: reduce effect near strong edges to minimize halos
+        float detailMagnitude = length(clarityDetail);
+        float edgeMask = 1.0 - smoothstep(0.1, 0.4, detailMagnitude);
+        
+        // Midtone focus: clarity affects midtones more than extremes
+        float midtoneMask = 4.0 * currentLuma * (1.0 - saturate(currentLuma));
+        midtoneMask = pow(midtoneMask, 0.5);
+        
+        float clarityStrength = uniforms.clarity * 0.8 * midtoneMask * (0.3 + 0.7 * edgeMask);
+        
+        // Apply detail enhancement with soft limiting per channel
+        float3 clarityAdjust = clarityDetail * clarityStrength;
+        clarityAdjust = clarityAdjust / (1.0 + abs(clarityAdjust) * 2.0);
+        
+        // Additive approach - luminance stable
+        color.rgb += clarityAdjust;
     }
     
     // --- 3. Lighting & Color ---

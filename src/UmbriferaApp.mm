@@ -38,7 +38,9 @@ UmbriferaApp::UmbriferaApp() {
     m_Uniforms.grain_amount = 0.0f;
     m_Uniforms.grain_size = 1.0f;
     m_Uniforms.clarity = 0.0f;
-    m_Uniforms.texture_amt = 0.0f;
+    m_Uniforms.denoise_luma = 0.0f;
+    m_Uniforms.denoise_chroma = 0.0f;
+    m_Uniforms.sharpen_intensity = 0.0f;
     
     // Initialize Constants (immutable, not reset by auto adjust)
     m_Uniforms.contrast_pivot = 0.18f; // Mid-grey
@@ -357,7 +359,9 @@ std::string UmbriferaApp::SerializeUniforms(const Uniforms& u) {
     ss << "vignette_size=" << u.vignette_size << "\n";
     ss << "grain_amount=" << u.grain_amount << "\n";
     ss << "clarity=" << u.clarity << "\n";
-    ss << "texture_amt=" << u.texture_amt << "\n";
+    ss << "denoise_luma=" << u.denoise_luma << "\n";
+    ss << "denoise_chroma=" << u.denoise_chroma << "\n";
+    ss << "sharpen_intensity=" << u.sharpen_intensity << "\n";
     ss << "base_exposure=" << u.base_exposure << "\n";
     ss << "hsl_enabled=" << u.hsl_enabled << "\n";
     
@@ -395,7 +399,9 @@ void UmbriferaApp::DeserializeUniforms(const std::string& data, Uniforms& u) {
             else if (key == "vignette_size") u.vignette_size = std::clamp(std::stof(valStr), 0.0f, 1.0f);
             else if (key == "grain_amount") u.grain_amount = std::clamp(std::stof(valStr), 0.0f, 1.0f);
             else if (key == "clarity") u.clarity = std::clamp(std::stof(valStr), -1.0f, 1.0f);
-            else if (key == "texture_amt") u.texture_amt = std::clamp(std::stof(valStr), -1.0f, 1.0f);
+            else if (key == "denoise_luma") u.denoise_luma = std::clamp(std::stof(valStr), 0.0f, 1.0f);
+            else if (key == "denoise_chroma") u.denoise_chroma = std::clamp(std::stof(valStr), 0.0f, 1.0f);
+            else if (key == "sharpen_intensity") u.sharpen_intensity = std::clamp(std::stof(valStr), 0.0f, 1.0f);
             else if (key == "base_exposure") u.base_exposure = std::stof(valStr);
             else if (key == "hsl_enabled") u.hsl_enabled = std::clamp(std::stoi(valStr), 0, 1);
             else if (key.rfind("hsl_", 0) == 0) {
@@ -691,7 +697,9 @@ Uniforms UmbriferaApp::GetDefaultUniforms() const {
     defaults.grain_amount = 0.0f;
     defaults.grain_size = 1.0f;
     defaults.clarity = 0.0f;
-    defaults.texture_amt = 0.0f;
+    defaults.denoise_luma = 0.0f;
+    defaults.denoise_chroma = 0.0f;
+    defaults.sharpen_intensity = 0.0f;
     defaults.base_exposure = 0.0f;
     
     // Constants (not user-editable)
