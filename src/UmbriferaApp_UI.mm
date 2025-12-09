@@ -1665,8 +1665,19 @@ void UmbriferaApp::RenderUI() {
     UI_Header("Presets");
     // Removed border (false)
     ImGui::BeginChild("Presets", ImVec2(0, 80), false, ImGuiWindowFlags_HorizontalScrollbar);
+    
+    // Default button (resets all sliders to default values)
+    if (ImGui::Button("Default", ImVec2(100, 60))) {
+        Uniforms defaults = GetDefaultUniforms();
+        // Preserve base_exposure (calculated from raw image)
+        defaults.base_exposure = m_Uniforms.base_exposure;
+        m_Uniforms = defaults;
+        SaveSidecar();
+        changed = true;
+    }
+    
     for (size_t i = 0; i < m_Presets.size(); i++) {
-        if (i > 0) ImGui::SameLine();
+        ImGui::SameLine();
         
         ImGui::PushID((int)i);
         if (ImGui::Button(m_Presets[i].name.c_str(), ImVec2(100, 60))) {
@@ -1728,26 +1739,8 @@ void UmbriferaApp::RenderUI() {
     if (SliderWithReset("Vibrance", &m_Uniforms.vibrance, -1.0f, 1.0f, 0.0f)) changed = true;
     if (SliderWithReset("Saturation", &m_Uniforms.saturation, 0.0f, 2.0f, 1.0f)) changed = true;
     
-    // Custom Hue Offset Slider with non-linear sensitivity
-    {
-        float val = m_Uniforms.hue_offset;
-        float sliderVal = cbrtf(m_Uniforms.hue_offset * 2.0f); 
-        if (sliderVal > 1.0f) sliderVal = 1.0f;
-        if (sliderVal < -1.0f) sliderVal = -1.0f;
-        
-        // Use SliderWithReset logic manually to handle non-linear mapping
-        ImGui::PushID("HueOffset");
-        if (ImGui::SliderFloat("##HueOffset", &sliderVal, -1.0f, 1.0f)) {
-            m_Uniforms.hue_offset = sliderVal * sliderVal * sliderVal * 0.5f;
-            changed = true;
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Hue Offset")) {
-            m_Uniforms.hue_offset = 0.0f;
-            changed = true;
-        }
-        ImGui::PopID();
-    }
+    // Hue Offset with non-linear sensitivity (scale=2.0 maps slider range to +/-0.5 hue)
+    if (UIHelpers::SliderWithResetNonLinear("Hue Offset", &m_Uniforms.hue_offset, -1.0f, 1.0f, 0.0f, 2.0f)) changed = true;
     
     UI_Separator();
     
@@ -1793,7 +1786,6 @@ void UmbriferaApp::RenderUI() {
             
             // Tint the reset buttons
             ImVec4 baseColor = headerColors[i];
-            // Make it subtle for the button
             ImVec4 buttonColor = ImVec4(baseColor.x, baseColor.y, baseColor.z, 0.3f);
             ImVec4 buttonHover = ImVec4(baseColor.x, baseColor.y, baseColor.z, 0.5f);
             ImVec4 buttonActive = ImVec4(baseColor.x, baseColor.y, baseColor.z, 0.7f);
@@ -1802,50 +1794,30 @@ void UmbriferaApp::RenderUI() {
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, buttonHover);
             ImGui::PushStyleColor(ImGuiCol_ButtonActive, buttonActive);
             
-            // Hue (Non-linear)
+            // Hue (Non-linear, scale=10.0 maps slider to +/-0.1)
             float hVal = m_Uniforms.hsl_adjustments[i].x;
-            float hSlider = cbrtf(hVal * 10.0f); 
-            
-            if (ImGui::SliderFloat("##Hue", &hSlider, -1.0f, 1.0f, "%.3f")) {
-                m_Uniforms.hsl_adjustments[i].x = hSlider * hSlider * hSlider * 0.1f;
-                changed = true;
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Hue")) {
-                m_Uniforms.hsl_adjustments[i].x = 0.0f;
+            if (UIHelpers::SliderWithResetNonLinear("Hue", &hVal, -1.0f, 1.0f, 0.0f, 10.0f)) {
+                m_Uniforms.hsl_adjustments[i].x = hVal;
                 changed = true;
             }
             
-            // Saturation
+            // Saturation (Non-linear, scale=1.0)
             float sVal = m_Uniforms.hsl_adjustments[i].y;
-            float sSlider = cbrtf(sVal);
-            if (ImGui::SliderFloat("##Sat", &sSlider, -1.0f, 1.0f, "%.3f")) {
-                m_Uniforms.hsl_adjustments[i].y = sSlider * sSlider * sSlider;
-                changed = true;
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Saturation")) {
-                m_Uniforms.hsl_adjustments[i].y = 0.0f;
+            if (UIHelpers::SliderWithResetNonLinear("Saturation", &sVal, -1.0f, 1.0f, 0.0f, 1.0f)) {
+                m_Uniforms.hsl_adjustments[i].y = sVal;
                 changed = true;
             }
             
-            // Luminance
+            // Luminance (Non-linear, scale=1.0)
             float lVal = m_Uniforms.hsl_adjustments[i].z;
-            float lSlider = cbrtf(lVal);
-            if (ImGui::SliderFloat("##Lum", &lSlider, -1.0f, 1.0f, "%.3f")) {
-                m_Uniforms.hsl_adjustments[i].z = lSlider * lSlider * lSlider;
-                changed = true;
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Luminance")) {
-                m_Uniforms.hsl_adjustments[i].z = 0.0f;
+            if (UIHelpers::SliderWithResetNonLinear("Luminance", &lVal, -1.0f, 1.0f, 0.0f, 1.0f)) {
+                m_Uniforms.hsl_adjustments[i].z = lVal;
                 changed = true;
             }
             
-            ImGui::PopStyleColor(3); // Pop button colors
+            ImGui::PopStyleColor(3);
             ImGui::PopID();
             
-            // Gap after every color
             UI_GapSmall();
         }
     }

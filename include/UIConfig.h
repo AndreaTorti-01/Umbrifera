@@ -45,4 +45,19 @@ constexpr int ROTATE_GRID_MAJOR_EVERY = 5;        // Major line every N lines
 constexpr float ROTATE_SENSITIVITY = 0.15f;       // Degrees per pixel of mouse movement
 constexpr float ROTATE_MAX_ANGLE = 90.0f;         // Maximum rotation in either direction
 
+// --- Custom Slider Styling ---
+constexpr float SLIDER_GRAB_MIN_WIDTH = 6.0f;     // Thinner grab handle (default ~12)
+constexpr float SLIDER_FIXED_WIDTH = 180.0f;      // Fixed slider width for all sliders
+constexpr int SLIDER_DISPLAY_PRECISION = 2;       // Total significant digits to show normally
+constexpr int SLIDER_EDIT_PRECISION = 4;          // Digits when editing (4 = "0.0000")
+constexpr float SLIDER_DRAG_THRESHOLD = 3.0f;     // Pixels of movement to start drag
+
+// Night blue color for slider grab handle (lighter for visibility)
+constexpr float SLIDER_GRAB_R = 0.25f;
+constexpr float SLIDER_GRAB_G = 0.35f;
+constexpr float SLIDER_GRAB_B = 0.55f;
+constexpr float SLIDER_GRAB_ACTIVE_R = 0.35f;
+constexpr float SLIDER_GRAB_ACTIVE_G = 0.45f;
+constexpr float SLIDER_GRAB_ACTIVE_B = 0.70f;
+
 } // namespace UIConfig

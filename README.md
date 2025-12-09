@@ -16,15 +16,6 @@ Features are ranked by implementation difficulty for AI agents (⭐ = Easy, ⭐�
 
 ### UI/UX Improvements
 
-#### ⭐ Default Preset Button
-Add a "Default" button alongside the existing "Auto" button in the presets area. When clicked, this button zeroes all sliders and toggles to their default neutral values (exposure=0, contrast=1, saturation=1, etc.).
-
-#### ⭐ Reduce Slider Total Digits
-Reduce the number of total digits displayed on all sliders to 2. Cleaner appearance without sacrificing useful precision. Keep current granularity, just reduce number of shown digits. allow to write the hidden digits, then showing only 2 again when defocusing or pressing enter to confirm.
-
-#### ⭐⭐ Editable Slider Values
-Allow users to click on the slider value and type a specific number directly. The value should be validated and clamped to the slider's valid range.
-
 #### ⭐ Confirm Crop with Enter Key
 Allow pressing Enter to confirm and apply the current crop, equivalent to clicking the "Crop" button.
 

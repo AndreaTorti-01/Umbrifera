@@ -30,6 +30,37 @@ The 16-bit integer RGBA data is uploaded to the GPU as a Metal texture.
 
 The core processing happens in the fragment shader (`fragment_main` in `Shaders.metal`). The input is the normalized Linear sRGB image with mipmaps pre-generated for local contrast processing.
 
+### Step 3.0: Denoise (Bilateral Filter)
+Reduces noise in the image before other processing steps, operating in YCbCr color space for independent control of luminance and chrominance noise.
+
+#### Luma Denoise
+*   **Purpose**: Reduces luminance noise (grain-like patterns) while preserving edges.
+*   **Algorithm**: Bilateral filter - edge-preserving blur that considers both spatial distance and intensity similarity.
+*   **Parameters**:
+    *   `sigma_s` (spatial): 1.0 + denoise_luma × 5.0 (blur radius in pixels)
+    *   `sigma_r` (range): 0.001 + denoise_luma × 0.05 (intensity tolerance)
+*   **Application**: Only the Y (luminance) channel is replaced from the denoised version.
+
+#### Chroma Denoise
+*   **Purpose**: Reduces color noise (blotchy color artifacts) more aggressively than luma.
+*   **Algorithm**: Sparse bilateral filter for efficiency at larger radii.
+*   **Parameters**:
+    *   `sigma_s` (spatial): 2.0 + denoise_chroma × 20.0 (larger radius for color noise)
+    *   `sigma_r` (range): 0.01 + denoise_chroma × 0.2 (less sensitive to edges)
+*   **Application**: Only Cb and Cr (chrominance) channels are replaced.
+
+### Step 3.0.5: Sharpening (Edge-Aware Laplacian)
+Enhances image detail using mipmap-based sharpening with edge protection.
+
+*   **Algorithm**: Laplacian of Gaussian approximation using mipmap difference.
+*   **Resolution Independence**: LOD offset = log2(maxDimension / 4000) for consistent results.
+*   **Mip Level**: 0.7 + LOD offset for balanced fine/medium detail enhancement.
+*   **Formula**: `laplacian = mip[lod] - mip[lod+1]`
+*   **Edge Mask**: Gradient magnitude detection reduces sharpening near strong edges to prevent halos.
+    *   `edgeMask = 1.0 / (1.0 + edgeStrength / 0.05)`
+*   **Luminance Protection**: Smoothstep attenuation in extreme shadows (< 0.05) and highlights (> 0.9).
+*   **Final Application**: `color += laplacian × edgeMask × lumaProtect × intensity × 4.0`
+
 ### Step 3.1: White Balance (Temperature & Tint)
 Adjusts the color balance relative to the camera's "As Shot" WB.
 *   **Temperature**: Adjusts Red (warm) vs Blue (cool).
