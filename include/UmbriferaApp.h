@@ -257,6 +257,7 @@ private:
     void Undo();
     id<MTLBuffer> m_HistogramBuffer = nil;
     id<MTLBuffer> m_HistogramBufferDisplay = nil; // Double buffering for display
+    std::atomic<bool> m_HistogramProcessingComplete{true}; // Tracks if histogram GPU work is done
     id<MTLSamplerState> m_TextureSampler = nil; // For linear filtering
     CAMetalLayer* m_MetalLayer = nil;
     MTLRenderPassDescriptor* m_RenderPassDescriptor = nil;

@@ -120,11 +120,6 @@ void UmbriferaApp::CleanupMetal() {
 void UmbriferaApp::ProcessImage() {
     if (!m_RawTexture || !m_ProcessedTexture) return;
 
-    // Swap Histogram Buffers
-    // The buffer we just displayed becomes the new write target
-    // The buffer we just wrote to becomes the new display source
-    std::swap(m_HistogramBuffer, m_HistogramBufferDisplay);
-
     // Create a command buffer for GPU commands
     id<MTLCommandBuffer> cb = [m_CommandQueue commandBuffer];
     
@@ -251,6 +246,17 @@ void UmbriferaApp::ProcessImage() {
             [blitHist endEncoding];
         }
     }
+
+    // Mark that histogram processing is in-flight
+    m_HistogramProcessingComplete = false;
+    
+    // Set completion handler to swap buffers when GPU work is done
+    [cb addCompletedHandler:^(id<MTLCommandBuffer> _Nonnull) {
+        // Swap histogram buffers now that the GPU has finished writing to m_HistogramBuffer
+        std::swap(this->m_HistogramBuffer, this->m_HistogramBufferDisplay);
+        // Mark that processing is complete
+        this->m_HistogramProcessingComplete = true;
+    }];
 
     [cb commit];
 }
@@ -567,7 +573,8 @@ void UmbriferaApp::RenderFrame() {
         UpdateUniforms();
         
         // Only process image (apply exposure + compute histogram) if something changed
-        if (m_ImageDirty) {
+        // AND the previous processing has completed
+        if (m_ImageDirty && m_HistogramProcessingComplete) {
             ProcessImage();
             m_ImageDirty = false;
         }

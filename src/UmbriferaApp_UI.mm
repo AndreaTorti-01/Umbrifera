@@ -1598,32 +1598,39 @@ void UmbriferaApp::RenderUI() {
         // Normal Develop panel content
         
         // Histogram Display
-        // Read back histogram data from GPU buffer (Use Display buffer which is stable)
-        if (m_HistogramBufferDisplay) {
-        uint32_t* ptr = (uint32_t*)[m_HistogramBufferDisplay contents];
-        
-        // Ensure size
-        if (m_Histogram.size() != 256) m_Histogram.resize(256, 0.0f);
-        
-        // 1. Read and Linear Scaling
-        float maxVal = 0.0f;
-        
-        // Find max value in the meaningful range (1-254) to avoid clipping spikes dominating
-        for (int i = 0; i < 256; i++) {
-            float currentCount = (float)ptr[i];
+        // Update histogram data only when GPU processing is complete
+        // This freezes the histogram during processing to ensure smooth transitions
+        if (m_HistogramBufferDisplay && m_HistogramProcessingComplete) {
+            uint32_t* ptr = (uint32_t*)[m_HistogramBufferDisplay contents];
             
-            // Direct read (smoothing is handled in display loop)
-            m_Histogram[i] = currentCount;
+            // Ensure size
+            if (m_Histogram.size() != 256) m_Histogram.resize(256, 0.0f);
             
-            // Calculate max for scaling
-            if (i > 0 && i < 255) {
-                if (m_Histogram[i] > maxVal) maxVal = m_Histogram[i];
+            // 1. Read and Linear Scaling
+            float maxVal = 0.0f;
+            
+            // Find max value in the meaningful range (1-254) to avoid clipping spikes dominating
+            for (int i = 0; i < 256; i++) {
+                float currentCount = (float)ptr[i];
+                
+                // Direct read (smoothing is handled in display loop)
+                m_Histogram[i] = currentCount;
+                
+                // Calculate max for scaling
+                if (i > 0 && i < 255) {
+                    if (m_Histogram[i] > maxVal) maxVal = m_Histogram[i];
+                }
+            }
+            
+            if (maxVal <= 0.0f) maxVal = 1.0f;
+        } else {
+            // While processing, use cached histogram data
+            if (m_Histogram.empty()) {
+                m_Histogram.resize(256, 0.0f);
             }
         }
         
-        if (maxVal <= 0.0f) maxVal = 1.0f;
-        
-        // 2. Draw Graph (256 Vertical Bars)
+        // 2. Draw Graph (256 Vertical Bars) - Always render to maintain layout
         ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
         ImVec2 canvas_size = ImVec2(ImGui::GetContentRegionAvail().x, 100); // Taller for better detail
         
@@ -1636,6 +1643,15 @@ void UmbriferaApp::RenderUI() {
         if (m_SmoothHistogram.size() != 256) {
             m_SmoothHistogram.resize(256, 0.0f);
         }
+
+        // Calculate max value for scaling
+        float maxVal = 0.0f;
+        if (!m_Histogram.empty()) {
+            for (int i = 1; i < 255; i++) {
+                if (m_Histogram[i] > maxVal) maxVal = m_Histogram[i];
+            }
+        }
+        if (maxVal <= 0.0f) maxVal = 1.0f;
 
         float dt = ImGui::GetIO().DeltaTime;
         float speed = 20.0f; // Tunable speed
@@ -1668,7 +1684,6 @@ void UmbriferaApp::RenderUI() {
         }
         
         ImGui::Dummy(canvas_size);
-    }
     
     UI_Separator();
 
