@@ -495,4 +495,186 @@ inline bool SliderWithResetNonLinear(const char* label, float* v, float slider_m
     return changed;
 }
 
+// Quadratic slider for reduced sensitivity near center
+// Useful for contrast-like controls where fine adjustment around default is important
+// center: the value where quadratic mapping is applied (typically 1.0 for contrast)
+// Mapping: for values near center, use quadratic mapping to reduce sensitivity
+inline bool SliderWithResetQuadratic(const char* label, float* v, float v_min, float v_max, float default_val, float center = 1.0f) {
+    ImGuiWindow* window = ImGui::GetCurrentWindow();
+    if (window->SkipItems) return false;
+    
+    const ImGuiStyle& style = ImGui::GetStyle();
+    
+    ImGui::PushID(label);
+    const ImGuiID id = ImGui::GetID("##slider");
+    
+    const float sliderWidth = UIConfig::SLIDER_FIXED_WIDTH;
+    
+    bool changed = false;
+    bool justFinishedEditing = false;
+    
+    const bool isEditingThis = (SliderEditState::isEditing && SliderEditState::editingId == id);
+    
+    ImGui::PushStyleVar(ImGuiStyleVar_GrabMinSize, UIConfig::SLIDER_GRAB_MIN_WIDTH);
+    ImGui::PushStyleColor(ImGuiCol_SliderGrab, ImVec4(UIConfig::SLIDER_GRAB_R, UIConfig::SLIDER_GRAB_G, UIConfig::SLIDER_GRAB_B, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, ImVec4(UIConfig::SLIDER_GRAB_ACTIVE_R, UIConfig::SLIDER_GRAB_ACTIVE_G, UIConfig::SLIDER_GRAB_ACTIVE_B, 1.0f));
+    
+    if (isEditingThis) {
+        ImGui::SetNextItemWidth(sliderWidth);
+        
+        if (SliderEditState::editingId == id) {
+            ImGui::SetKeyboardFocusHere();
+        }
+        
+        if (ImGui::InputText("##edit", SliderEditState::editBuffer, sizeof(SliderEditState::editBuffer),
+                             ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll)) {
+            char* endPtr;
+            float newVal = strtof(SliderEditState::editBuffer, &endPtr);
+            if (endPtr != SliderEditState::editBuffer && std::isfinite(newVal)) {
+                newVal = (newVal < v_min) ? v_min : (newVal > v_max ? v_max : newVal);
+                *v = newVal;
+                changed = true;
+            }
+            SliderEditState::isEditing = false;
+            SliderEditState::editingId = 0;
+            justFinishedEditing = true;
+        }
+        
+        if (!justFinishedEditing && ImGui::IsItemDeactivatedAfterEdit()) {
+            char* endPtr;
+            float newVal = strtof(SliderEditState::editBuffer, &endPtr);
+            if (endPtr != SliderEditState::editBuffer && std::isfinite(newVal)) {
+                newVal = (newVal < v_min) ? v_min : (newVal > v_max ? v_max : newVal);
+                *v = newVal;
+                changed = true;
+            }
+            SliderEditState::isEditing = false;
+            SliderEditState::editingId = 0;
+            justFinishedEditing = true;
+        } else if (!justFinishedEditing && ImGui::IsItemDeactivated() && !ImGui::IsItemActive()) {
+            SliderEditState::isEditing = false;
+            SliderEditState::editingId = 0;
+            justFinishedEditing = true;
+        }
+    } else {
+        ImVec2 sliderPos = window->DC.CursorPos;
+        ImVec2 sliderSize = ImVec2(sliderWidth, ImGui::GetFrameHeight());
+        ImRect sliderBB(sliderPos, ImVec2(sliderPos.x + sliderSize.x, sliderPos.y + sliderSize.y));
+        
+        ImGui::ItemSize(sliderSize, style.FramePadding.y);
+        if (!ImGui::ItemAdd(sliderBB, id)) {
+            ImGui::PopStyleColor(2);
+            ImGui::PopStyleVar();
+            ImGui::PopID();
+            return false;
+        }
+        
+        bool hovered = ImGui::ItemHoverable(sliderBB, id, ImGuiItemFlags_None);
+        bool clicked = hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+        bool held = ImGui::IsMouseDown(ImGuiMouseButton_Left);
+        
+        // Convert value to slider position using quadratic mapping around center
+        // Split the range into two parts: below center and above center
+        float sliderVal;
+        if (*v <= center) {
+            // Below center: map [v_min, center] to [0, 0.5]
+            float normalized = (*v - v_min) / (center - v_min);
+            sliderVal = 0.5f * sqrtf(normalized); // Square root for less sensitivity
+        } else {
+            // Above center: map [center, v_max] to [0.5, 1.0]
+            float normalized = (*v - center) / (v_max - center);
+            sliderVal = 0.5f + 0.5f * sqrtf(normalized);
+        }
+        
+        if (clicked) {
+            SliderEditState::wasDragging = false;
+            SliderEditState::dragStartValue = sliderVal;
+            SliderEditState::dragStartPos = ImGui::GetMousePos();
+            ImGui::SetActiveID(id, window);
+            ImGui::SetFocusID(id, window);
+            ImGui::FocusWindow(window);
+        }
+        
+        if (ImGui::GetActiveID() == id) {
+            if (held) {
+                ImVec2 currentPos = ImGui::GetMousePos();
+                float dx = currentPos.x - SliderEditState::dragStartPos.x;
+                
+                if (!SliderEditState::wasDragging && fabsf(dx) > UIConfig::SLIDER_DRAG_THRESHOLD) {
+                    SliderEditState::wasDragging = true;
+                }
+                
+                if (SliderEditState::wasDragging) {
+                    float delta = dx / sliderSize.x;
+                    float newSliderVal = SliderEditState::dragStartValue + delta;
+                    newSliderVal = (newSliderVal < 0.0f) ? 0.0f : (newSliderVal > 1.0f ? 1.0f : newSliderVal);
+                    
+                    // Convert slider position back to actual value using inverse quadratic
+                    float newActualVal;
+                    if (newSliderVal <= 0.5f) {
+                        // Below center: inverse of square root is square
+                        float normalized = (newSliderVal / 0.5f);
+                        normalized = normalized * normalized; // Square for inverse
+                        newActualVal = v_min + normalized * (center - v_min);
+                    } else {
+                        // Above center
+                        float normalized = ((newSliderVal - 0.5f) / 0.5f);
+                        normalized = normalized * normalized;
+                        newActualVal = center + normalized * (v_max - center);
+                    }
+                    
+                    if (*v != newActualVal) {
+                        *v = newActualVal;
+                        sliderVal = newSliderVal;
+                        changed = true;
+                    }
+                }
+            } else {
+                if (!SliderEditState::wasDragging) {
+                    SliderEditState::isEditing = true;
+                    SliderEditState::editingId = id;
+                    snprintf(SliderEditState::editBuffer, sizeof(SliderEditState::editBuffer), 
+                             "%.*f", UIConfig::SLIDER_EDIT_PRECISION, *v);
+                }
+                SliderEditState::wasDragging = false;
+                ImGui::ClearActiveID();
+            }
+        }
+        
+        ImU32 frameBgColor = ImGui::GetColorU32(hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg);
+        ImGui::RenderFrame(sliderBB.Min, sliderBB.Max, frameBgColor, true, style.FrameRounding);
+        
+        float grabWidth = UIConfig::SLIDER_GRAB_MIN_WIDTH;
+        float grabX = sliderBB.Min.x + sliderVal * (sliderSize.x - grabWidth);
+        ImRect grabBB(ImVec2(grabX, sliderBB.Min.y + 1), 
+                      ImVec2(grabX + grabWidth, sliderBB.Max.y - 1));
+        
+        ImU32 grabColor = ImGui::GetColorU32((ImGui::GetActiveID() == id) ? ImGuiCol_SliderGrabActive : ImGuiCol_SliderGrab);
+        window->DrawList->AddRectFilled(grabBB.Min, grabBB.Max, grabColor, style.GrabRounding);
+        
+        char valueText[32];
+        FormatValueTwoSigDigits(valueText, sizeof(valueText), *v);
+        ImVec2 valueSize = ImGui::CalcTextSize(valueText);
+        ImVec2 valuePos = ImVec2(sliderBB.Min.x + (sliderSize.x - valueSize.x) * 0.5f,
+                                  sliderBB.Min.y + (sliderSize.y - valueSize.y) * 0.5f);
+        
+        ImU32 textColor = ImGui::GetColorU32(ImGuiCol_Text);
+        window->DrawList->AddText(valuePos, textColor, valueText);
+    }
+    
+    ImGui::PopStyleColor(2);
+    ImGui::PopStyleVar();
+    
+    ImGui::SameLine();
+    
+    if (ImGui::Button(label)) {
+        *v = default_val;
+        changed = true;
+    }
+    
+    ImGui::PopID();
+    
+    return changed;
+}
+
 } // namespace UIHelpers

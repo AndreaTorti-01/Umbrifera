@@ -59,7 +59,10 @@ struct Uniforms {
     int hsl_enabled;
     float4 hsl_adjustments[15]; // x=Hue, y=Sat, z=Lum
     
-    float padding[3];
+    // Clipping Indicator
+    int show_clipping_indicator;
+    
+    float padding[2];
 };
 
 // ... (Helpers remain same)
@@ -866,11 +869,29 @@ fragment float4 fragment_main(VertexOut in [[stage_in]],
     color.rgb = saturate(color.rgb);
     color.rgb = linear_to_srgb(color.rgb);
     
+    // --- 6. Clipping Indicator Overlay ---
+    if (uniforms.show_clipping_indicator != 0) {
+        float luma = dot(color.rgb, float3(0.2126, 0.7152, 0.0722));
+        float3 overlay = color.rgb;
+        
+        // Red overlay for overexposed/clipped highlights (all channels near 1.0)
+        if (luma >= 0.98 && color.r >= 0.98 && color.g >= 0.98 && color.b >= 0.98) {
+            overlay = mix(color.rgb, float3(1.0, 0.0, 0.0), 0.5);
+        }
+        // Green overlay for underexposed/clipped shadows (all channels near 0.0)
+        else if (luma <= 0.02 && color.r <= 0.02 && color.g <= 0.02 && color.b <= 0.02) {
+            overlay = mix(color.rgb, float3(0.0, 1.0, 0.0), 0.5);
+        }
+        
+        color.rgb = overlay;
+    }
+    
     return float4(color.rgb, 1.0);
 }
 
 // Compute Shader: Histogram
 // Calculates the luminance distribution of the image.
+// Detects and removes clipping indicator overlays to get true histogram.
 kernel void histogram_main(texture2d<float, access::read> inputTexture [[texture(0)]],
                          device atomic_uint* histogramBuffer [[buffer(0)]],
                          uint2 gid [[thread_position_in_grid]]) {
@@ -883,9 +904,34 @@ kernel void histogram_main(texture2d<float, access::read> inputTexture [[texture
     // Read pixel
     float4 color = inputTexture.read(gid);
     
-    // Calculate Luminance (Perceptual Weighting: Rec.709)
-    // Input color is already sRGB (from fragment shader), so this luma is perceptual.
+    // Detect and undo clipping indicator overlays
+    // Red overlay is mix(original, red, 0.5) where original is bright
+    // Green overlay is mix(original, green, 0.5) where original is dark
+    
     float luma = dot(color.rgb, float3(0.2126, 0.7152, 0.0722));
+    
+    // Check if this is a red clipping overlay (bright pixel with red tint)
+    // Original was bright (>0.98), overlay is mix(bright, red, 0.5)
+    // So if we see high red and moderate green/blue, it might be overlaid
+    if (color.r > 0.75 && color.g < 0.6 && color.b < 0.6 && color.r > color.g && color.r > color.b) {
+        // Likely red overlay on bright pixel
+        // Undo: original = (overlay - 0.5 * red) / 0.5
+        // Since original was uniform bright, recover the average
+        float originalValue = color.r * 0.5 + 0.5; // Approximate
+        color.rgb = float3(originalValue);
+    }
+    // Check if this is a green clipping overlay (dark pixel with green tint)
+    else if (color.g > 0.25 && color.r < 0.15 && color.b < 0.15 && color.g > color.r && color.g > color.b) {
+        // Likely green overlay on dark pixel
+        // Undo: original was near zero, overlay added green
+        float originalValue = (color.g - 0.5) / 0.5; // Will be negative or near zero
+        if (originalValue < 0.0) originalValue = 0.0;
+        color.rgb = float3(originalValue);
+    }
+    
+    // Recalculate luminance with potentially corrected color
+    // Input color is already sRGB (from fragment shader), so this luma is perceptual.
+    luma = dot(color.rgb, float3(0.2126, 0.7152, 0.0722));
     
     // Calculate bin index (0-255)
     // Linear X-axis mapping dark -> light

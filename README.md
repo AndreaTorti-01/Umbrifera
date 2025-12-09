@@ -16,21 +16,10 @@ Features are ranked by implementation difficulty for AI agents (⭐ = Easy, ⭐�
 
 ### UI/UX Improvements
 
-#### ⭐ Confirm Crop with Enter Key
-Allow pressing Enter to confirm and apply the current crop, equivalent to clicking the "Crop" button.
-
 #### ⭐⭐ De-Crop Functionality
 When re-entering crop mode via the crop button after a previous crop, allow the user to "undo" or expand back to the original uncropped image boundaries (before any crop was applied).
 
-#### ⭐⭐ Clipping Indicator Toggle
-Add a toggle or small button (location TBD - suggest near histogram or in button bar) that when enabled, overlays the image with:
-- **Red** highlighting on overexposed/clipped areas (values at or near maximum)
-- **Green** highlighting on underexposed/clipped areas (values at or near minimum)
-
 ### Image Processing Adjustments
-
-#### ⭐ Reduce Contrast Slider Sensitivity
-Reduce the strength/sensitivity of the contrast slider near the center position (around 1.0). Small movements near the center should produce more subtle changes.
 
 #### ⭐⭐⭐ Color Grading Wheels
 Add three color grading wheels for Shadows, Midtones, and Highlights. Each wheel allows the user to shift the color balance for that tonal range. Wheels should have:

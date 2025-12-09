@@ -48,6 +48,27 @@ void UmbriferaApp::RenderUI() {
         }
     }
     
+    // Enter key to confirm crop
+    if (m_CropMode && ImGui::IsKeyPressed(ImGuiKey_Enter, false)) {
+        if (m_RawTexture && m_Device && m_CommandQueue) {
+            PushUndoState();
+            m_CropPending = true;
+            m_PendingCropRect[0] = m_CropRect[0];
+            m_PendingCropRect[1] = m_CropRect[1];
+            m_PendingCropRect[2] = m_CropRect[2];
+            m_PendingCropRect[3] = m_CropRect[3];
+            m_PendingCropRotation = m_RotationAngle;
+        }
+        m_CropMode = false;
+        m_CropRatioIndex = 0;
+        m_CropRect[0] = 0.0f; m_CropRect[1] = 0.0f;
+        m_CropRect[2] = 1.0f; m_CropRect[3] = 1.0f;
+        m_ViewZoom = 1.0f;
+        m_ViewOffset[0] = 0.0f;
+        m_ViewOffset[1] = 0.0f;
+        m_RotationAngle = 0;
+    }
+    
     // Loading Modal (Blocks interaction)
     if (m_IsLoading) {
         if (!ImGui::IsPopupOpen("Loading...")) {
@@ -1597,6 +1618,8 @@ void UmbriferaApp::RenderUI() {
     } else {
         // Normal Develop panel content
         
+        bool changed = false;
+        
         // Histogram Display
         // Update histogram data only when GPU processing is complete
         // This freezes the histogram during processing to ensure smooth transitions
@@ -1636,8 +1659,9 @@ void UmbriferaApp::RenderUI() {
         
         ImDrawList* draw_list = ImGui::GetWindowDrawList();
         
-        // Background (Slightly Lighter Grey)
-        draw_list->AddRectFilled(canvas_pos, ImVec2(canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y), IM_COL32(40, 40, 40, 255));
+        // Background (always same color)
+        ImU32 bgColor = IM_COL32(40, 40, 40, 255);
+        draw_list->AddRectFilled(canvas_pos, ImVec2(canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y), bgColor);
         
         // Ensure smooth histogram is initialized
         if (m_SmoothHistogram.size() != 256) {
@@ -1679,15 +1703,35 @@ void UmbriferaApp::RenderUI() {
                 float y1 = canvas_pos.y + canvas_size.y - normalizedHeight * canvas_size.y;
                 float y2 = canvas_pos.y + canvas_size.y;
                 
-                draw_list->AddRectFilled(ImVec2(x1, y1), ImVec2(x2, y2), IM_COL32(200, 200, 200, 255));
+                // Histogram bars: bright ochre when clipping indicator is enabled, gray otherwise
+                ImU32 barColor = m_ShowClippingIndicator ? IM_COL32(218, 165, 32, 255) : IM_COL32(200, 200, 200, 255);
+                draw_list->AddRectFilled(ImVec2(x1, y1), ImVec2(x2, y2), barColor);
             }
         }
         
-        ImGui::Dummy(canvas_size);
+        // Make histogram clickable to toggle clipping indicator
+        ImGui::SetCursorScreenPos(canvas_pos);
+        ImGui::InvisibleButton("##histogram_clickable", canvas_size);
+        bool histogramHovered = ImGui::IsItemHovered();
+        if (ImGui::IsItemClicked()) {
+            m_ShowClippingIndicator = !m_ShowClippingIndicator;
+            changed = true; // Trigger shader update
+        }
+        
+        // Draw border: thick blue rounded border when hovered or enabled
+        if (histogramHovered || m_ShowClippingIndicator) {
+            ImU32 borderColor = IM_COL32(70, 130, 180, 255); // Steel blue
+            float borderThickness = 3.0f;
+            float rounding = 6.0f;
+            draw_list->AddRect(canvas_pos, ImVec2(canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y), 
+                             borderColor, rounding, 0, borderThickness);
+        }
+        
+        if (histogramHovered) {
+            ImGui::SetTooltip("Click to toggle clipping indicator");
+        }
     
     UI_Separator();
-
-    bool changed = false;
 
     // --- Presets ---
     UI_Header("Presets");
@@ -1748,7 +1792,7 @@ void UmbriferaApp::RenderUI() {
     // Light & Color
     UI_Header("Light & Color");
     if (SliderWithReset("Exposure", &m_Uniforms.exposure, -5.0f, 5.0f, 0.0f)) changed = true;
-    if (SliderWithReset("Contrast", &m_Uniforms.contrast, 0.5f, 1.5f, 1.0f)) changed = true;
+    if (UIHelpers::SliderWithResetQuadratic("Contrast", &m_Uniforms.contrast, 0.5f, 1.5f, 1.0f)) changed = true;
     
     UI_GapSmall();
     

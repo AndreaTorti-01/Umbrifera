@@ -63,7 +63,10 @@ struct Uniforms {
     // 15 * 16 bytes = 240 bytes.
     vector_float4 hsl_adjustments[15]; 
     
-    float padding[3]; // Alignment
+    // Clipping Indicator
+    int show_clipping_indicator; // 0 or 1
+    
+    float padding[2]; // Alignment
 };
 
 class UmbriferaApp {
@@ -249,6 +252,9 @@ private:
     
     // Comparison Mode (show original image while button held)
     bool m_CompareMode = false;
+    
+    // Clipping Indicator (toggled via histogram click)
+    bool m_ShowClippingIndicator = false;
     
     // Undo State (up to 10 states)
     static constexpr int MAX_UNDO_STATES = 10;

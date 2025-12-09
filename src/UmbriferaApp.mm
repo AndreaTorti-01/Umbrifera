@@ -312,6 +312,9 @@ void UmbriferaApp::UpdateUniforms() {
         lastGrainSize = m_Uniforms.grain_size;
     }
     
+    // Update clipping indicator flag
+    m_Uniforms.show_clipping_indicator = m_ShowClippingIndicator ? 1 : 0;
+    
     UpdateMacOSMenu();
 }
 
