@@ -210,6 +210,7 @@ void UmbriferaApp::InitGraphics() {
     m_CropRotateTexture = LoadAssetTexture("crop_rotate_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png");
     m_FitScreenTexture = LoadAssetTexture("fit_screen_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png");
     m_UndoTexture = LoadAssetTexture("undo_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png");
+    m_CompareTexture = LoadAssetTexture("compare_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png");
 }
 
 id<MTLTexture> UmbriferaApp::LoadAssetTexture(const std::string& filename) {

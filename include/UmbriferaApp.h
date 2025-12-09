@@ -245,6 +245,10 @@ private:
     id<MTLTexture> m_CropRotateTexture = nil;
     id<MTLTexture> m_FitScreenTexture = nil;
     id<MTLTexture> m_UndoTexture = nil;
+    id<MTLTexture> m_CompareTexture = nil;
+    
+    // Comparison Mode (show original image while button held)
+    bool m_CompareMode = false;
     
     // Undo State (up to 10 states)
     static constexpr int MAX_UNDO_STATES = 10;

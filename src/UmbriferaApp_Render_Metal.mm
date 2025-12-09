@@ -198,7 +198,15 @@ void UmbriferaApp::ProcessImage() {
     [re setViewport:viewport];
     
     [re setRenderPipelineState:m_RenderPSO];
-    [re setFragmentBytes:&m_Uniforms length:sizeof(Uniforms) atIndex:0];
+    
+    // Use default uniforms when in comparison mode, otherwise use current settings
+    if (m_CompareMode) {
+        Uniforms defaultUniforms = GetDefaultUniforms();
+        [re setFragmentBytes:&defaultUniforms length:sizeof(Uniforms) atIndex:0];
+    } else {
+        [re setFragmentBytes:&m_Uniforms length:sizeof(Uniforms) atIndex:0];
+    }
+    
     [re setFragmentTexture:m_RawTexture atIndex:0];
     [re setFragmentTexture:m_GrainTexture atIndex:1];  // Pre-computed grain texture
     [re drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];

@@ -1368,10 +1368,23 @@ void UmbriferaApp::RenderUI() {
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Straighten (drag left/right)");
             }
             
-            // RIGHT: Undo button (leftmost of right side), then Fit Screen
+            // RIGHT: Compare, Undo, Fit Screen (from right to left)
             float rightBtnX = winPos.x + winSize.x - btnMargin - iconSize - 8.0f;
             
-            // Fit Screen button (rightmost)
+            // Compare button (rightmost) - shows original while held
+            if (m_CompareTexture) {
+                ImGui::SetCursorScreenPos(ImVec2(rightBtnX, iconBtnY));
+                ImGui::ImageButton("##Compare", (ImTextureID)m_CompareTexture, ImVec2(iconSize, iconSize));
+                bool wasComparing = m_CompareMode;
+                m_CompareMode = ImGui::IsItemActive();
+                if (m_CompareMode != wasComparing) {
+                    m_ImageDirty = true;  // Trigger re-render when state changes
+                }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Compare (hold to view original)");
+                rightBtnX -= (iconSize + 8.0f + btnGap);
+            }
+            
+            // Fit Screen button
             if (m_FitScreenTexture) {
                 ImGui::SetCursorScreenPos(ImVec2(rightBtnX, iconBtnY));
                 if (ImGui::ImageButton("##FitScreen", (ImTextureID)m_FitScreenTexture, ImVec2(iconSize, iconSize))) {

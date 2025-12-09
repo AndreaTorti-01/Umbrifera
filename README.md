@@ -22,9 +22,6 @@ Allow pressing Enter to confirm and apply the current crop, equivalent to clicki
 #### ⭐⭐ De-Crop Functionality
 When re-entering crop mode via the crop button after a previous crop, allow the user to "undo" or expand back to the original uncropped image boundaries (before any crop was applied).
 
-#### ⭐⭐ Comparison Mode Button
-Add a button to the Image Viewer button row that, **while held pressed**, shows the "original" image (with all sliders at their default/zeroed values) for quick before/after comparison. Use the `compare_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png` icon from the assets folder.
-
 #### ⭐⭐ Clipping Indicator Toggle
 Add a toggle or small button (location TBD - suggest near histogram or in button bar) that when enabled, overlays the image with:
 - **Red** highlighting on overexposed/clipped areas (values at or near maximum)
