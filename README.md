@@ -1,10 +1,10 @@
 # Umbrifera
 
-Umbrifera is a high-performance Raw Image Processor for macOS, built with C++20, Metal, and ImGui. It features a 16-bit linear floating-point pipeline for professional-grade color grading.
+Umbrifera is a high-performance Raw Image Processor for macOS and Windows, built with C++20, Metal (macOS), Vulkan (Windows), and ImGui. It features a 16-bit linear floating-point pipeline for professional-grade color grading.
 
 ## Features
 
-*   **High Performance:** GPU-accelerated processing using Metal.
+*   **High Performance:** GPU-accelerated processing using Metal or Vulkan.
 *   **Professional Color:** 16-bit Linear Floating Point pipeline.
 *   **Raw Support:** Supports a wide range of cameras via LibRaw.
 

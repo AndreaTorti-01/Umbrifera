@@ -9,10 +9,16 @@
 #include <libraw/libraw.h>
 
 #include "FileNavigator.h"
+#include "GpuTypes.h"
 
-#include <Metal/Metal.h>
-#include <QuartzCore/QuartzCore.h>
+#ifdef __APPLE__
 #include <simd/simd.h>
+typedef vector_float4 Float4;
+#else
+struct Float4 {
+    float x, y, z, w;
+};
+#endif
 
 struct GLFWwindow;
 
@@ -61,7 +67,7 @@ struct Uniforms {
     // Metal arrays are aligned to 16 bytes (float4).
     // It's safer to use a fixed size array of float4 where x=h, y=s, z=l, w=unused.
     // 15 * 16 bytes = 240 bytes.
-    vector_float4 hsl_adjustments[15]; 
+    Float4 hsl_adjustments[15]; 
     
     // Clipping Indicator
     int show_clipping_indicator; // 0 or 1
@@ -94,9 +100,11 @@ private:
     void InitImGui();
     void InitGraphics();
     void LoadLogo(const std::string& path);
+    GpuTexture LoadAssetTexture(const std::string& path);
     
     void RenderFrame();
     void RenderUI();
+    void RenderMenuBar();
     void ProcessImage();
     
     void UpdateUniforms();
@@ -107,12 +115,34 @@ private:
     void ComputeHistogram();
     void CalculateAutoSettings(); // New: Auto Adjust
     Uniforms GetDefaultUniforms() const; // Get default uniform values
+    
+    // Image operations
+    void ResizeImage(int targetWidth, int targetHeight);
+    
+    // Texture data retrieval
+    void GetTextureBytes(GpuTexture& texture, void* outBytes, size_t bytesPerRow);
+    void* GetBufferContents(GpuBuffer& buffer);
+    
+    // Texture operations
+    GpuTexture CreateTexture(int width, int height, GpuPixelFormat format, bool mipmapped, bool renderTarget);
+    void UpdateTexture(GpuTexture& texture, const void* data, size_t bytesPerRow);
+    void GenerateMipmaps(GpuTexture& texture);
+
+    // Buffer operations
+    GpuBuffer CreateBuffer(size_t size, bool storage);
+    void UpdateBuffer(GpuBuffer& buffer, const void* data, size_t size);
 
     // Platform specific helpers
-    void InitMetal();
-    void CleanupMetal();
+    void InitGraphicsBackend();
+    void CleanupGraphicsBackend();
+#ifdef __APPLE__
     void SetupMacOSMenu();
     void UpdateMacOSMenu();
+#else
+    uint32_t FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
+    VkCommandBuffer BeginSingleTimeCommands();
+    void EndSingleTimeCommands(VkCommandBuffer commandBuffer);
+#endif
 
     GLFWwindow* m_Window = nullptr;
     float m_ClearColor[4] = {0.45f, 0.55f, 0.60f, 1.00f};
@@ -129,6 +159,7 @@ private:
     bool m_FirstLayout = true;
     bool m_ImageDirty = false; // Flag to trigger re-processing
     bool m_RawHistogramDirty = false; // Flag to recompute raw histogram (for Auto Adjust)
+    bool m_RawHistogramReadbackNeeded = false; // Flag to perform deferred histogram readback
     
     // Crop Mode State
     bool m_CropMode = false;
@@ -175,7 +206,9 @@ private:
     
     // Raw Histogram (for Auto Adjust)
     std::vector<uint32_t> m_RawHistogram;
-    id<MTLBuffer> m_RawHistogramBuffer = nil;
+    GpuBuffer m_RawHistogramBuffer = {};
+    int m_HistogramFrameCounter = 0;
+    static constexpr int HISTOGRAM_SKIP_FRAMES = 4;
     
     // Async Loading
     std::atomic<bool> m_IsLoading{false};
@@ -185,19 +218,21 @@ private:
     int m_PendingHeight = 0;
     float m_InitialExposure = 0.0f; // Calculated exposure compensation
     std::mutex m_LoadingMutex;
+    std::recursive_mutex m_VulkanResourceMutex;
     std::thread m_LoadingThread;
     
-    // Metal State
-    id<MTLDevice> m_Device = nil;
-    id<MTLCommandQueue> m_CommandQueue = nil;
-    id<MTLRenderPipelineState> m_RenderPSO = nil;
-    id<MTLComputePipelineState> m_HistogramPSO = nil;
-    id<MTLComputePipelineState> m_Lanczos3PSO = nil;  // Lanczos3 downscale shader
-    id<MTLComputePipelineState> m_RotatePSO = nil;    // Rotation shader
-    id<MTLComputePipelineState> m_GrainPSO = nil;     // Film grain generation shader
-    id<MTLTexture> m_RawTexture = nil;       // Source (Immutable)
-    id<MTLTexture> m_ProcessedTexture = nil; // Destination (Render Target)
-    id<MTLTexture> m_GrainTexture = nil;     // Pre-computed film grain pattern
+    // Graphics State
+    GpuDevice m_Device = {};
+    GpuCommandQueue m_CommandQueue = {};
+    GpuRenderPipeline m_RenderPSO = {};
+    GpuComputePipeline m_HistogramPSO = {};
+    GpuComputePipeline m_ResizePSO = {};    // Resize/Downscale shader
+    GpuComputePipeline m_RotatePSO = {};    // Rotation shader
+    GpuComputePipeline m_GrainPSO = {};     // Film grain generation shader
+    VkDescriptorSet m_HistogramDescriptorSet = VK_NULL_HANDLE;  // Cached descriptor set for histogram
+    GpuTexture m_RawTexture = {};       // Source (Immutable)
+    GpuTexture m_ProcessedTexture = {}; // Destination (Render Target)
+    GpuTexture m_GrainTexture = {};     // Pre-computed film grain pattern
     bool m_GrainNeedsRegeneration = true;    // Flag to regenerate grain texture
     
     // Presets
@@ -241,14 +276,14 @@ private:
     // Pending Undo Operation (deferred to next frame to avoid texture-in-use issues)
     bool m_UndoPending = false;
 
-    id<MTLTexture> m_LogoTexture = nil;
-    id<MTLTexture> m_RotateCWTexture = nil;
-    id<MTLTexture> m_RotateCCWTexture = nil;
-    id<MTLTexture> m_CropTexture = nil;
-    id<MTLTexture> m_CropRotateTexture = nil;
-    id<MTLTexture> m_FitScreenTexture = nil;
-    id<MTLTexture> m_UndoTexture = nil;
-    id<MTLTexture> m_CompareTexture = nil;
+    GpuTexture m_LogoTexture = {};
+    GpuTexture m_RotateCWTexture = {};
+    GpuTexture m_RotateCCWTexture = {};
+    GpuTexture m_CropTexture = {};
+    GpuTexture m_CropRotateTexture = {};
+    GpuTexture m_FitScreenTexture = {};
+    GpuTexture m_UndoTexture = {};
+    GpuTexture m_CompareTexture = {};
     
     // Comparison Mode (show original image while button held)
     bool m_CompareMode = false;
@@ -261,13 +296,47 @@ private:
     std::deque<UndoState> m_UndoStack;
     void PushUndoState();
     void Undo();
-    id<MTLBuffer> m_HistogramBuffer = nil;
-    id<MTLBuffer> m_HistogramBufferDisplay = nil; // Double buffering for display
+    GpuBuffer m_UniformBuffer = {};
+    GpuBuffer m_HistogramBuffer = {};
+    GpuBuffer m_HistogramBufferDisplay = {}; // Double buffering for display
+    VkFence m_HistogramFence = VK_NULL_HANDLE;
+    VkCommandBuffer m_HistogramCommandBuffer = VK_NULL_HANDLE;
     std::atomic<bool> m_HistogramProcessingComplete{true}; // Tracks if histogram GPU work is done
-    id<MTLSamplerState> m_TextureSampler = nil; // For linear filtering
+    GpuSampler m_TextureSampler = {}; // For linear filtering
+#ifdef __APPLE__
     CAMetalLayer* m_MetalLayer = nil;
     MTLRenderPassDescriptor* m_RenderPassDescriptor = nil;
+#else
+    VkInstance m_VulkanInstance = VK_NULL_HANDLE;
+    VkPhysicalDevice m_VulkanPhysicalDevice = VK_NULL_HANDLE;
+    VkSurfaceKHR m_VulkanSurface = VK_NULL_HANDLE;
+    VkDescriptorPool m_VulkanDescriptorPool = VK_NULL_HANDLE;
+    ImGui_ImplVulkanH_Window m_VulkanMainWindowData;
+    uint32_t m_VulkanQueueFamily = (uint32_t)-1;
+    VkAllocationCallbacks* m_VulkanAllocator = nullptr;
+    uint32_t m_VulkanMinImageCount = 2;
+    bool m_VulkanSwapChainRebuild = false;
+
+    // Vulkan Pipeline Layouts
+    VkDescriptorSetLayout m_ComputeDescriptorSetLayout = VK_NULL_HANDLE;
+    VkPipelineLayout m_ComputePipelineLayout = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_HistogramDescriptorSetLayout = VK_NULL_HANDLE;
+    VkPipelineLayout m_HistogramPipelineLayout = VK_NULL_HANDLE;
     
-    // Asset loading helper
-    id<MTLTexture> LoadAssetTexture(const std::string& filename);
+    VkDescriptorSetLayout m_ResizeDescriptorSetLayout = VK_NULL_HANDLE;
+    VkPipelineLayout m_ResizePipelineLayout = VK_NULL_HANDLE;
+
+    VkDescriptorSetLayout m_RotateDescriptorSetLayout = VK_NULL_HANDLE;
+    VkPipelineLayout m_RotatePipelineLayout = VK_NULL_HANDLE;
+
+    VkDescriptorSetLayout m_GrainDescriptorSetLayout = VK_NULL_HANDLE;
+    VkPipelineLayout m_GrainPipelineLayout = VK_NULL_HANDLE;
+
+    VkCommandPool m_UtilityCommandPool = VK_NULL_HANDLE;
+
+    void InitComputePipelines();
+    void ComputeRawHistogram();
+    void GenerateGrainTexture();
+    void DestroyTexture(GpuTexture& tex);
+#endif
 };

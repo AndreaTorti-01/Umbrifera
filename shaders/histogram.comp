@@ -1,0 +1,48 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0) uniform sampler2D inputImage;
+layout(binding = 1) buffer Histogram {
+    uint bins[256];
+} h;
+
+// Shared memory for local histogram accumulation (per workgroup)
+shared uint localBins[256];
+
+void main() {
+    ivec2 texelCoord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = textureSize(inputImage, 0);
+    
+    // Initialize shared memory bins for this workgroup
+    uint threadIdx = gl_LocalInvocationIndex;
+    for (uint i = threadIdx; i < 256; i += (16u * 16u)) {
+        localBins[i] = 0;
+    }
+    barrier();
+    
+    // Process this thread's pixels
+    if (texelCoord.x < size.x && texelCoord.y < size.y) {
+        vec2 uv = (vec2(texelCoord) + 0.5) / vec2(size);
+        vec4 color = texture(inputImage, uv);
+
+        // Calculate luminance (Rec. 709)
+        float luma = dot(color.rgb, vec3(0.2126, 0.7152, 0.0722));
+        
+        // Map to 0-255
+        int bin = int(clamp(luma * 255.0, 0.0, 255.0));
+        
+        // Use local atomic add (much faster than global)
+        atomicAdd(localBins[bin], 1u);
+    }
+    
+    // Synchronize all threads before writing back to global memory
+    barrier();
+    
+    // Write accumulated bins from shared memory to global memory
+    for (uint i = threadIdx; i < 256; i += (16u * 16u)) {
+        if (localBins[i] > 0) {
+            atomicAdd(h.bins[i], localBins[i]);
+        }
+    }
+}
+

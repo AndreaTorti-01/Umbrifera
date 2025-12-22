@@ -256,10 +256,10 @@ void UmbriferaApp::SaveImageAsync(const std::string& filename, const std::string
     int height = (int)m_ProcessedTexture.height;
     
     // Read pixels from GPU on main thread (synchronous readback)
-    // We need to do this here because we can't access Metal texture from another thread easily without command buffer sync.
+    // We need to do this here because we can't access GPU texture from another thread easily without command buffer sync.
     // Since this is a readback, it will block the main thread briefly, but the encoding (heavy part) will be async.
     std::vector<uint8_t> pixels(width * height * 4);
-    [m_ProcessedTexture getBytes:pixels.data() bytesPerRow:width * 4 fromRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0];
+    GetTextureBytes(m_ProcessedTexture, pixels.data(), width * 4);
 
     // Metal texture is BGRA (usually). We need RGBA.
     // We also force Alpha to 255.
@@ -479,4 +479,64 @@ void UmbriferaApp::SaveImageAsync(const std::string& filename, const std::string
 
 void UmbriferaApp::SaveImage(const std::string& filename, const std::string& format) {
     SaveImageAsync(filename, format);
+}
+
+void UmbriferaApp::PushUndoState() {
+    if (!m_RawTexture) return;
+    
+    int width = (int)m_RawTexture.width;
+    int height = (int)m_RawTexture.height;
+    size_t bytesPerRow = width * 4 * sizeof(uint16_t); // RGBA16
+    
+    UndoState state;
+    state.width = width;
+    state.height = height;
+    state.textureData.resize(width * height * 4); // 4 components per pixel
+    
+    // Read texture data from GPU
+    GetTextureBytes(m_RawTexture, state.textureData.data(), bytesPerRow);
+    
+    // Add to undo stack, removing oldest if at max capacity
+    if (m_UndoStack.size() >= MAX_UNDO_STATES) {
+        m_UndoStack.pop_front();
+    }
+    m_UndoStack.push_back(std::move(state));
+}
+
+void UmbriferaApp::Undo() {
+    if (m_UndoStack.empty()) return;
+    
+    UndoState state = std::move(m_UndoStack.back());
+    m_UndoStack.pop_back();
+    
+    int width = state.width;
+    int height = state.height;
+    
+    // Create new raw texture
+    GpuTexture newRawTexture = CreateTexture(width, height, GpuPixelFormat::RGBA16Unorm, true, false);
+    if (!newRawTexture) return;
+    
+    // Upload texture data
+    size_t bytesPerRow = width * 4 * sizeof(uint16_t);
+    UpdateTexture(newRawTexture, state.textureData.data(), bytesPerRow);
+    GenerateMipmaps(newRawTexture);
+    
+    // Replace raw texture
+    m_RawTexture = newRawTexture;
+    
+    // Create new processed texture
+    m_ProcessedTexture = CreateTexture(width, height, GpuPixelFormat::BGRA8Unorm, true, true);
+    
+    // Regenerate grain for new resize dimensions
+    m_GrainNeedsRegeneration = true;
+    
+    // Reset view
+    m_ViewZoom = 1.0f;
+    m_ViewOffset[0] = 0.0f;
+    m_ViewOffset[1] = 0.0f;
+    m_RotationAngle = 0;
+    
+    // Trigger reprocess
+    m_ImageDirty = true;
+    m_RawHistogramDirty = true;
 }

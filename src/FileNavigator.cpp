@@ -5,28 +5,35 @@
 #include <algorithm>
 #include <chrono>
 #include <jpeglib.h>
+#include "stb_image.h"
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
+
+#ifdef __APPLE__
 #include <CoreGraphics/CoreGraphics.h>
 #include <ImageIO/ImageIO.h>
 #include <ImageIO/CGImageDestination.h>
 #include <Cocoa/Cocoa.h>
+#endif
 
 // Helper to load texture from asset
-static id<MTLTexture> LoadTextureFromAsset(id<MTLDevice> device, const std::string& filename) {
+static GpuTexture LoadTextureFromAsset(GpuDevice device, const std::string& filename) {
     std::string path = "assets/" + filename;
     // Check if file exists
     if (!std::filesystem::exists(path)) {
         // Try looking in parent directory (if running from build)
         path = "../assets/" + filename;
-        if (!std::filesystem::exists(path)) return nil;
+        if (!std::filesystem::exists(path)) return {};
     }
 
+#ifdef __APPLE__
     NSURL* url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path.c_str()]];
     CGImageSourceRef source = CGImageSourceCreateWithURL((__bridge CFURLRef)url, NULL);
-    if (!source) return nil;
+    if (!source) return {};
     
     CGImageRef image = CGImageSourceCreateImageAtIndex(source, 0, NULL);
     CFRelease(source);
-    if (!image) return nil;
+    if (!image) return {};
     
     size_t width = CGImageGetWidth(image);
     size_t height = CGImageGetHeight(image);
@@ -43,10 +50,17 @@ static id<MTLTexture> LoadTextureFromAsset(id<MTLDevice> device, const std::stri
     CGImageRelease(image);
     
     MTLTextureDescriptor* desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:width height:height mipmapped:NO];
-    id<MTLTexture> texture = [device newTextureWithDescriptor:desc];
-    [texture replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0 withBytes:rawData.data() bytesPerRow:width * 4];
+    GpuTexture texture;
+    texture.texture = [device newTextureWithDescriptor:desc];
+    texture.width = (uint32_t)width;
+    texture.height = (uint32_t)height;
+    [texture.texture replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0 withBytes:rawData.data() bytesPerRow:width * 4];
     
     return texture;
+#else
+    // TODO: Implement Windows asset loader
+    return {};
+#endif
 }
 
 void FileNavigator::ClearThumbnailCache() {
@@ -54,7 +68,7 @@ void FileNavigator::ClearThumbnailCache() {
     {
         std::lock_guard<std::mutex> lock(m_ThumbnailMutex);
         for (auto &kv : m_Thumbnails) {
-            kv.second.texture = nil;
+            kv.second.texture = {};
             kv.second.isLoaded = false;
             kv.second.isLoading = false;
         }
@@ -241,6 +255,7 @@ static std::string CacheFilePathFor(const std::string& srcPath, const std::strin
 
 // Save RGBA buffer to PNG file using ImageIO
 static bool SaveRgbaToPngFile(const uint8_t* rgba, int width, int height, const std::string& outPath) {
+#ifdef __APPLE__
     @autoreleasepool {
         CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
         CGBitmapInfo bitmapInfo = (CGBitmapInfo)((uint32_t)kCGImageAlphaPremultipliedLast | (uint32_t)kCGBitmapByteOrder32Big);
@@ -267,39 +282,62 @@ static bool SaveRgbaToPngFile(const uint8_t* rgba, int width, int height, const 
         CGImageRelease(image);
         return ok;
     }
+#else
+    // Windows implementation using stb_image_write
+    return stbi_write_png(outPath.c_str(), width, height, 4, rgba, width * 4) != 0;
+#endif
 }
 
 // Load PNG/other raster image to RGBA buffer
 static std::vector<uint8_t> LoadImageFileToRgba(const std::string& path, int* outWidth, int* outHeight) {
-    NSURL* url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path.c_str()]];
-    CGImageSourceRef source = CGImageSourceCreateWithURL((__bridge CFURLRef)url, NULL);
-    if (!source) return {};
-    CGImageRef image = CGImageSourceCreateImageAtIndex(source, 0, NULL);
-    CFRelease(source);
-    if (!image) return {};
-    size_t width = CGImageGetWidth(image);
-    size_t height = CGImageGetHeight(image);
-    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-    std::vector<uint8_t> rawData(width * height * 4);
-    CGBitmapInfo bitmapInfo = (CGBitmapInfo)((uint32_t)kCGImageAlphaPremultipliedLast | (uint32_t)kCGBitmapByteOrder32Big);
-    CGContextRef context = CGBitmapContextCreate(rawData.data(), width, height, 8, width * 4, colorSpace, bitmapInfo);
-    if (!context) {
-        CGImageRelease(image);
+#ifdef __APPLE__
+    @autoreleasepool {
+        NSURL* url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path.c_str()]];
+        CGImageSourceRef source = CGImageSourceCreateWithURL((__bridge CFURLRef)url, NULL);
+        if (!source) return {};
+        CGImageRef image = CGImageSourceCreateImageAtIndex(source, 0, NULL);
+        CFRelease(source);
+        if (!image) return {};
+        size_t width = CGImageGetWidth(image);
+        size_t height = CGImageGetHeight(image);
+        CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+        std::vector<uint8_t> rawData(width * height * 4);
+        CGBitmapInfo bitmapInfo = (CGBitmapInfo)((uint32_t)kCGImageAlphaPremultipliedLast | (uint32_t)kCGBitmapByteOrder32Big);
+        CGContextRef context = CGBitmapContextCreate(rawData.data(), width, height, 8, width * 4, colorSpace, bitmapInfo);
+        if (!context) {
+            CGImageRelease(image);
+            CGColorSpaceRelease(colorSpace);
+            return {};
+        }
+        CGContextDrawImage(context, CGRectMake(0, 0, width, height), image);
+        CGContextRelease(context);
         CGColorSpaceRelease(colorSpace);
-        return {};
+        CGImageRelease(image);
+        *outWidth = (int)width;
+        *outHeight = (int)height;
+        return rawData;
     }
-    CGContextDrawImage(context, CGRectMake(0, 0, width, height), image);
-    CGContextRelease(context);
-    CGColorSpaceRelease(colorSpace);
-    CGImageRelease(image);
-    *outWidth = (int)width;
-    *outHeight = (int)height;
-    return rawData;
+#else
+    // Windows implementation using stb_image
+    int w, h, n;
+    unsigned char* data = stbi_load(path.c_str(), &w, &h, &n, 4);
+    if (!data) return {};
+    
+    std::vector<uint8_t> rgba(data, data + (w * h * 4));
+    stbi_image_free(data);
+    *outWidth = w;
+    *outHeight = h;
+    return rgba;
+#endif
 }
 
 FileNavigator::FileNavigator() {
     // Default to user home directory
+#ifdef __APPLE__
     const char* homeDir = getenv("HOME");
+#else
+    const char* homeDir = getenv("USERPROFILE");
+#endif
     if (homeDir) {
         m_RootPath = std::filesystem::path(homeDir);
     } else {
@@ -307,9 +345,18 @@ FileNavigator::FileNavigator() {
     }
     m_PathBuffer = m_RootPath.string();
 
-    // Setup cache directory in macOS user caches folder
+    // Setup cache directory
+#ifdef __APPLE__
     if (homeDir) {
         m_CacheDir = std::string(homeDir) + "/Library/Caches/Umbrifera/thumbnails";
+    }
+#else
+    const char* localAppData = getenv("LOCALAPPDATA");
+    if (localAppData) {
+        m_CacheDir = std::string(localAppData) + "/Umbrifera/thumbnails";
+    }
+#endif
+    if (!m_CacheDir.empty()) {
         try {
             std::filesystem::create_directories(m_CacheDir);
         } catch (...) {
@@ -326,20 +373,28 @@ FileNavigator::~FileNavigator() {
     }
 }
 
-void FileNavigator::Init(id<MTLDevice> device) {
+void FileNavigator::Init(GpuDevice device, 
+                         std::function<GpuTexture(const std::string&)> assetLoader,
+                         std::function<GpuTexture(int, int, const void*)> textureCreator) {
     m_Device = device;
+    m_TextureCreator = textureCreator;
     
-    // Load Folder Icon (if exists)
-    m_FolderIconTexture = LoadTextureFromAsset(device, "folder_open_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png");
-    
-    // Load Up Arrow Icon
-    m_UpArrowTexture = LoadTextureFromAsset(device, "arrow_shape_up_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png");
+    if (assetLoader) {
+        m_FolderIconTexture = assetLoader("folder_open_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png");
+        m_UpArrowTexture = assetLoader("arrow_shape_up_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png");
+        m_FolderClosedTexture = assetLoader("folder_24dp_E3E3E3_FILL1_wght400_GRAD0_opsz24.png");
+        m_FolderOpenTexture = assetLoader("folder_open_24dp_E3E3E3_FILL1_wght400_GRAD0_opsz24.png");
+    } else {
+        // Fallback to old method (macOS only)
+#ifdef __APPLE__
+        m_FolderIconTexture = LoadTextureFromAsset(device, "folder_open_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png");
+        m_UpArrowTexture = LoadTextureFromAsset(device, "arrow_shape_up_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png");
+        m_FolderClosedTexture = LoadTextureFromAsset(device, "folder_24dp_E3E3E3_FILL1_wght400_GRAD0_opsz24.png");
+        m_FolderOpenTexture = LoadTextureFromAsset(device, "folder_open_24dp_E3E3E3_FILL1_wght400_GRAD0_opsz24.png");
+#endif
+    }
     
     m_LoaderThread = std::thread(&FileNavigator::ThumbnailLoaderThread, this);
-    
-    // Load Folder Icons
-    m_FolderClosedTexture = LoadTextureFromAsset(device, "folder_24dp_E3E3E3_FILL1_wght400_GRAD0_opsz24.png");
-    m_FolderOpenTexture = LoadTextureFromAsset(device, "folder_open_24dp_E3E3E3_FILL1_wght400_GRAD0_opsz24.png");
 }
 
 void FileNavigator::SetRootPath(const std::string& path) {
@@ -349,7 +404,7 @@ void FileNavigator::SetRootPath(const std::string& path) {
     }
 }
 
-void FileNavigator::SetLogo(id<MTLTexture> logo) {
+void FileNavigator::SetLogo(GpuTexture logo) {
     m_LogoTexture = logo;
 }
 
@@ -365,7 +420,7 @@ void FileNavigator::Render(std::function<void(std::string)> onFileSelected) {
     
     // 1. Up Button
     if (m_UpArrowTexture) {
-        if (ImGui::ImageButton("##UpBtn", (ImTextureID)m_UpArrowTexture, ImVec2(iconSize, iconSize))) {
+        if (ImGui::ImageButton("##UpBtn", (ImTextureID)m_UpArrowTexture.GetImGuiTexture(), ImVec2(iconSize, iconSize))) {
             if (m_RootPath.has_parent_path() && m_RootPath != m_RootPath.root_path()) {
                 m_RootPath = m_RootPath.parent_path();
                 m_PathBuffer = m_RootPath.string();
@@ -384,7 +439,8 @@ void FileNavigator::Render(std::function<void(std::string)> onFileSelected) {
     
     // 2. Open Folder Button (Moved to left of path)
     if (m_FolderIconTexture) {
-        if (ImGui::ImageButton("##OpenFolderBtn", (ImTextureID)m_FolderIconTexture, ImVec2(iconSize, iconSize))) {
+        if (ImGui::ImageButton("##OpenFolderBtn", (ImTextureID)m_FolderIconTexture.GetImGuiTexture(), ImVec2(iconSize, iconSize))) {
+#ifdef __APPLE__
             // Open Native Folder Picker
             NSOpenPanel* panel = [NSOpenPanel openPanel];
             [panel setCanChooseFiles:NO];
@@ -396,9 +452,11 @@ void FileNavigator::Render(std::function<void(std::string)> onFileSelected) {
                 std::string path = [[url path] UTF8String];
                 SetRootPath(path);
             }
+#endif
         }
     } else {
         if (ImGui::Button("Open", ImVec2(0, barHeight))) {
+#ifdef __APPLE__
              // Open Native Folder Picker
             NSOpenPanel* panel = [NSOpenPanel openPanel];
             [panel setCanChooseFiles:NO];
@@ -410,6 +468,7 @@ void FileNavigator::Render(std::function<void(std::string)> onFileSelected) {
                 std::string path = [[url path] UTF8String];
                 SetRootPath(path);
             }
+#endif
         }
     }
     
@@ -483,22 +542,55 @@ void FileNavigator::RenderDirectory(const std::filesystem::path& path) {
     std::vector<std::filesystem::directory_entry> dirs;
     std::vector<std::filesystem::directory_entry> files;
     
-    for (const auto& entry : std::filesystem::directory_iterator(path)) {
-        if (entry.is_directory()) {
-            // Skip hidden folders
-            if (entry.path().filename().string().rfind(".", 0) != 0) {
-                dirs.push_back(entry);
-            }
-        } else if (entry.is_regular_file()) {
-            if (IsRawImageFile(entry.path())) {
-                files.push_back(entry);
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec)) return;
+
+    try {
+        auto it = std::filesystem::directory_iterator(path, std::filesystem::directory_options::skip_permission_denied, ec);
+        if (ec) {
+            ImGui::TextColored(ImVec4(1, 0, 0, 1), "Access Denied");
+            return;
+        }
+
+        for (const auto& entry : it) {
+            std::error_code entry_ec;
+            bool isDir = false;
+            try {
+                isDir = entry.is_directory(entry_ec);
+            } catch (...) { continue; }
+            
+            if (entry_ec) continue;
+
+            if (isDir) {
+                // Skip hidden folders
+                if (entry.path().filename().string().rfind(".", 0) != 0) {
+                    dirs.push_back(entry);
+                }
+            } else {
+                bool isReg = false;
+                try {
+                    isReg = entry.is_regular_file(entry_ec);
+                } catch (...) { continue; }
+                
+                if (isReg && !entry_ec) {
+                    if (IsRawImageFile(entry.path())) {
+                        files.push_back(entry);
+                    }
+                }
             }
         }
+    } catch (...) {
+        ImGui::TextColored(ImVec4(1, 0, 0, 1), "Error reading directory");
+        return;
     }
     
     // Sort alphabetically (case-insensitive)
     auto sortFunc = [](const auto& a, const auto& b) {
+#ifdef _WIN32
+        return _stricmp(a.path().filename().string().c_str(), b.path().filename().string().c_str()) < 0;
+#else
         return strcasecmp(a.path().filename().string().c_str(), b.path().filename().string().c_str()) < 0;
+#endif
     };
     std::sort(dirs.begin(), dirs.end(), sortFunc);
     std::sort(files.begin(), files.end(), sortFunc);
@@ -514,7 +606,7 @@ void FileNavigator::RenderDirectory(const std::filesystem::path& path) {
         ImGuiID nodeId = ImGui::GetID(name.c_str());
         bool wasOpen = storage->GetInt(nodeId, 0) != 0;
         
-        id<MTLTexture> icon = wasOpen ? m_FolderOpenTexture : m_FolderClosedTexture;
+        GpuTexture icon = wasOpen ? m_FolderOpenTexture : m_FolderClosedTexture;
         
         // Custom Row Rendering
         ImVec2 startPos = ImGui::GetCursorScreenPos();
@@ -523,7 +615,7 @@ void FileNavigator::RenderDirectory(const std::filesystem::path& path) {
         
         // Draw Icon
         if (icon) {
-            ImGui::Image((ImTextureID)icon, ImVec2(16, 16));
+            ImGui::Image((ImTextureID)icon.GetImGuiTexture(), ImVec2(16, 16));
         }
         ImGui::SameLine();
         
@@ -575,10 +667,10 @@ void FileNavigator::RenderDirectory(const std::filesystem::path& path) {
         float margin = 5.0f;
         
         // Get thumbnail and calculate actual display dimensions
-        id<MTLTexture> thumb = GetThumbnail(entry.path());
+        GpuTexture thumb = GetThumbnail(entry.path());
         if (thumb) {
-            float texWidth = (float)[thumb width];
-            float texHeight = (float)[thumb height];
+            float texWidth = (float)thumb.width;
+            float texHeight = (float)thumb.height;
             float aspect = texHeight / texWidth;
             thumbHeight = thumbWidth * aspect;
         }
@@ -593,7 +685,7 @@ void FileNavigator::RenderDirectory(const std::filesystem::path& path) {
         float thumbY = startPos.y + (rowHeight - thumbHeight) * 0.5f;
         ImGui::SetCursorScreenPos(ImVec2(startPos.x + margin, thumbY));
         if (thumb) {
-            ImGui::Image((ImTextureID)thumb, ImVec2(thumbWidth, thumbHeight));
+            ImGui::Image((ImTextureID)thumb.GetImGuiTexture(), ImVec2(thumbWidth, thumbHeight));
         } else {
             // Placeholder while loading
             ImGui::Button("...", ImVec2(thumbWidth, thumbHeight));
@@ -622,14 +714,14 @@ void FileNavigator::RenderDirectory(const std::filesystem::path& path) {
     }
 }
 
-id<MTLTexture> FileNavigator::GetThumbnail(const std::filesystem::path& path) {
+GpuTexture FileNavigator::GetThumbnail(const std::filesystem::path& path) {
     std::string pathStr = path.string();
     
     std::lock_guard<std::mutex> lock(m_ThumbnailMutex);
     auto it = m_Thumbnails.find(pathStr);
     if (it != m_Thumbnails.end()) {
         // If we have an entry but texture is not set and not currently loading, schedule load
-        if (it->second.texture == nil && !it->second.isLoading) {
+        if (!it->second.texture && !it->second.isLoading) {
             it->second.isLoading = true;
             QueueThumbnailLoad(path);
         }
@@ -637,10 +729,10 @@ id<MTLTexture> FileNavigator::GetThumbnail(const std::filesystem::path& path) {
     }
 
     // Not found, create placeholder and queue it
-    m_Thumbnails[pathStr] = {nil, true, false}; // isLoading=true, isLoaded=false
+    m_Thumbnails[pathStr] = {{}, true, false}; // isLoading=true, isLoaded=false
     QueueThumbnailLoad(path);
 
-    return nil;
+    return {};
 }
 
 void FileNavigator::QueueThumbnailLoad(const std::filesystem::path& path) {
@@ -668,7 +760,7 @@ void FileNavigator::ThumbnailLoaderThread() {
         }
         
         // Attempt to load from disk cache first
-        id<MTLTexture> texture = nil;
+        GpuTexture texture = {};
         std::string srcPath = path.string();
         std::string cachePath = "";
         if (!m_CacheDir.empty()) {
@@ -680,12 +772,20 @@ void FileNavigator::ThumbnailLoaderThread() {
             int w = 0, h = 0;
             std::vector<uint8_t> rgba = LoadImageFileToRgba(cachePath, &w, &h);
             if (!rgba.empty() && m_Device) {
+#ifdef __APPLE__
                 @autoreleasepool {
                     MTLTextureDescriptor* desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:w height:h mipmapped:NO];
-                    texture = [m_Device newTextureWithDescriptor:desc];
+                    texture.texture = [m_Device newTextureWithDescriptor:desc];
+                    texture.width = (uint32_t)w;
+                    texture.height = (uint32_t)h;
                     MTLRegion region = MTLRegionMake2D(0, 0, w, h);
-                    [texture replaceRegion:region mipmapLevel:0 withBytes:rgba.data() bytesPerRow:w * 4];
+                    [texture.texture replaceRegion:region mipmapLevel:0 withBytes:rgba.data() bytesPerRow:w * 4];
                 }
+#else
+                if (m_TextureCreator) {
+                    texture = m_TextureCreator(w, h, rgba.data());
+                }
+#endif
                 loadedFromCache = true;
             }
         }
@@ -710,12 +810,20 @@ void FileNavigator::ThumbnailLoaderThread() {
                                 int finalWidth, finalHeight;
                                 std::vector<uint8_t> rotated = RotateRgbaByOrientation(rgba, width, height, exifOrientation, &finalWidth, &finalHeight);
 
+#ifdef __APPLE__
                                 @autoreleasepool {
                                     MTLTextureDescriptor* desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:finalWidth height:finalHeight mipmapped:NO];
-                                    texture = [m_Device newTextureWithDescriptor:desc];
+                                    texture.texture = [m_Device newTextureWithDescriptor:desc];
+                                    texture.width = (uint32_t)finalWidth;
+                                    texture.height = (uint32_t)finalHeight;
                                     MTLRegion region = MTLRegionMake2D(0, 0, finalWidth, finalHeight);
-                                    [texture replaceRegion:region mipmapLevel:0 withBytes:rotated.data() bytesPerRow:finalWidth * 4];
+                                    [texture.texture replaceRegion:region mipmapLevel:0 withBytes:rotated.data() bytesPerRow:finalWidth * 4];
                                 }
+#else
+                                if (m_TextureCreator) {
+                                    texture = m_TextureCreator(finalWidth, finalHeight, rotated.data());
+                                }
+#endif
 
                                 // Save to cache asynchronously (best-effort)
                                 if (!cachePath.empty()) {
@@ -739,7 +847,7 @@ void FileNavigator::ThumbnailLoaderThread() {
             std::lock_guard<std::mutex> lock(m_ThumbnailMutex);
             auto &info = m_Thumbnails[path.string()];
             info.texture = texture;
-            info.isLoaded = (texture != nil);
+            info.isLoaded = (bool)texture;
             info.isLoading = false;
         }
     }

@@ -1,0 +1,32 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(binding = 0, rgba8) uniform readonly image2D inputImage;
+layout(binding = 1, rgba8) uniform writeonly image2D outputImage;
+
+layout(push_constant) uniform PushConstants {
+    int radius;
+} pcs;
+
+void main() {
+    ivec2 texelCoord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(inputImage);
+    if (texelCoord.x >= size.x || texelCoord.y >= size.y) return;
+
+    if (pcs.radius <= 0) {
+        imageStore(outputImage, texelCoord, imageLoad(inputImage, texelCoord));
+        return;
+    }
+
+    vec4 color = vec4(0.0);
+    int count = 0;
+    for (int i = -pcs.radius; i <= pcs.radius; ++i) {
+        for (int j = -pcs.radius; j <= pcs.radius; ++j) {
+            ivec2 coord = texelCoord + ivec2(i, j);
+            if (coord.x >= 0 && coord.x < size.x && coord.y >= 0 && coord.y < size.y) {
+                color += imageLoad(inputImage, coord);
+                count++;
+            }
+        }
+    }
+    imageStore(outputImage, texelCoord, color / float(count));
+}

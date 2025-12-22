@@ -1,3 +1,5 @@
+#define _USE_MATH_DEFINES
+#include <cmath>
 #include "UmbriferaApp.h"
 #include "UIConfig.h"
 #include "UIHelpers.h"
@@ -36,6 +38,67 @@ void UmbriferaApp::OpenResizeDialog() {
     m_ResizeTargetHeight = (int)m_RawTexture.height;
 }
 
+void UmbriferaApp::RenderMenuBar() {
+#ifndef __APPLE__
+    if (ImGui::BeginMainMenuBar()) {
+        if (ImGui::BeginMenu("Umbrifera")) {
+            if (ImGui::MenuItem("About Umbrifera")) {
+                // About dialog could be added here
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Quit", "Alt+F4")) {
+                glfwSetWindowShouldClose(m_Window, GLFW_TRUE);
+            }
+            ImGui::EndMenu();
+        }
+        
+        if (ImGui::BeginMenu("Export")) {
+            bool hasImage = (bool)m_ProcessedTexture;
+            if (ImGui::MenuItem("Export as JPG...", "Ctrl+E", false, hasImage)) {
+                m_ExportFormat = "jpg";
+                m_ShowExportOptions = true;
+            }
+            if (ImGui::MenuItem("Export as PNG...", nullptr, false, hasImage)) {
+                m_ExportFormat = "png";
+                m_ShowExportOptions = true;
+            }
+            if (ImGui::MenuItem("Export as TIFF...", nullptr, false, hasImage)) {
+                m_ExportFormat = "tiff";
+                m_ShowExportOptions = true;
+            }
+            ImGui::EndMenu();
+        }
+        
+        if (ImGui::BeginMenu("View")) {
+            if (ImGui::MenuItem("Reset Layout", "Ctrl+R")) {
+                m_ResetLayoutRequested = true;
+            }
+            if (ImGui::MenuItem("Toolbar at Top", nullptr, m_ButtonBarAtTop)) {
+                m_ButtonBarAtTop = !m_ButtonBarAtTop;
+            }
+            ImGui::EndMenu();
+        }
+        
+        if (ImGui::BeginMenu("Tools")) {
+            bool hasImage = (bool)m_ProcessedTexture;
+            if (ImGui::MenuItem("Resize", nullptr, false, hasImage)) {
+                OpenResizeDialog();
+            }
+            ImGui::EndMenu();
+        }
+        
+        if (ImGui::BeginMenu("More")) {
+            if (ImGui::MenuItem("Reset Thumbnail Cache")) {
+                ResetThumbnailsCache();
+            }
+            ImGui::EndMenu();
+        }
+        
+        ImGui::EndMainMenuBar();
+    }
+#endif
+}
+
 void UmbriferaApp::RenderUI() {
     // Global Keyboard Shortcuts
     ImGuiIO& io = ImGui::GetIO();
@@ -47,6 +110,21 @@ void UmbriferaApp::RenderUI() {
             m_UndoPending = true; // Defer to next frame to avoid texture-in-use issues
         }
     }
+
+    // Export: Ctrl+E
+    if (modKey && ImGui::IsKeyPressed(ImGuiKey_E, false)) {
+        if (m_ProcessedTexture && !m_IsLoading) {
+            m_ExportFormat = "jpg";
+            m_ShowExportOptions = true;
+        }
+    }
+
+    // Reset Layout: Ctrl+R
+    if (modKey && ImGui::IsKeyPressed(ImGuiKey_R, false)) {
+        m_ResetLayoutRequested = true;
+    }
+    
+    RenderMenuBar();
     
     // Enter key to confirm crop
     if (m_CropMode && ImGui::IsKeyPressed(ImGuiKey_Enter, false)) {
@@ -192,7 +270,7 @@ void UmbriferaApp::RenderUI() {
                     
                     // Sample from the texture
                     std::vector<uint8_t> fullPixels(width * height * 4);
-                    [m_ProcessedTexture getBytes:fullPixels.data() bytesPerRow:width * 4 fromRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0];
+                    GetTextureBytes(m_ProcessedTexture, fullPixels.data(), width * 4);
                     
                     // Downsample (simple nearest neighbor)
                     for (int y = 0; y < sampleHeight; y++) {
@@ -493,13 +571,13 @@ void UmbriferaApp::RenderUI() {
             
             if (!str.empty()) {
                 int val = std::atoi(str.c_str());
-                if (val > originalHeight) val = originalHeight;
                 if (val < 1) val = 1;
+                if (val > 100000) val = 100000; // Reasonable max
                 
                 m_ResizeTargetHeight = val;
                 m_ResizeTargetWidth = (int)((float)val * aspectRatio + 0.5f);
                 if (m_ResizeTargetWidth < 1) m_ResizeTargetWidth = 1;
-                if (m_ResizeTargetWidth > originalWidth) m_ResizeTargetWidth = originalWidth;
+                if (m_ResizeTargetWidth > 100000) m_ResizeTargetWidth = 100000;
                 
                 snprintf(widthBuf, sizeof(widthBuf), "%d", m_ResizeTargetWidth);
                 snprintf(heightBuf, sizeof(heightBuf), "%d", m_ResizeTargetHeight);
@@ -513,70 +591,12 @@ void UmbriferaApp::RenderUI() {
         // Centered buttons
         int result = UIHelpers::CenteredButtonPair("Resize", "Cancel");
         if (result == 1) {
-            // Perform resize using Lanczos3 shader
+            // Perform resize (allows both upscaling and downscaling)
             if (m_ResizeTargetWidth > 0 && m_ResizeTargetHeight > 0 &&
-                m_ResizeTargetWidth <= originalWidth && m_ResizeTargetHeight <= originalHeight &&
                 (m_ResizeTargetWidth != originalWidth || m_ResizeTargetHeight != originalHeight)) {
                 
                 PushUndoState(); // Save state before resize
-                
-                // Create new resized raw texture
-                MTLTextureDescriptor* newRawDesc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Unorm 
-                    width:m_ResizeTargetWidth height:m_ResizeTargetHeight mipmapped:NO];
-                newRawDesc.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
-                id<MTLTexture> newRawTexture = [m_Device newTextureWithDescriptor:newRawDesc];
-                
-                // Run box filter downscale compute shader
-                struct DownscaleParams {
-                    uint32_t srcWidth;
-                    uint32_t srcHeight;
-                    uint32_t dstWidth;
-                    uint32_t dstHeight;
-                } params = {
-                    (uint32_t)originalWidth,
-                    (uint32_t)originalHeight,
-                    (uint32_t)m_ResizeTargetWidth,
-                    (uint32_t)m_ResizeTargetHeight
-                };
-                
-                id<MTLCommandBuffer> cb = [m_CommandQueue commandBuffer];
-                id<MTLComputeCommandEncoder> ce = [cb computeCommandEncoder];
-                [ce setComputePipelineState:m_Lanczos3PSO];
-                [ce setTexture:m_RawTexture atIndex:0];
-                [ce setTexture:newRawTexture atIndex:1];
-                [ce setBytes:&params length:sizeof(params) atIndex:0];
-                
-                MTLSize threadsPerThreadgroup = MTLSizeMake(16, 16, 1);
-                MTLSize threadgroups = MTLSizeMake(
-                    (m_ResizeTargetWidth + 15) / 16,
-                    (m_ResizeTargetHeight + 15) / 16, 1);
-                
-                [ce dispatchThreadgroups:threadgroups threadsPerThreadgroup:threadsPerThreadgroup];
-                [ce endEncoding];
-                [cb commit];
-                [cb waitUntilCompleted];
-                
-                // Replace raw texture
-                m_RawTexture = newRawTexture;
-                
-                // Create new processed texture
-                MTLTextureDescriptor* targetDesc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm 
-                    width:m_ResizeTargetWidth height:m_ResizeTargetHeight mipmapped:YES];
-                NSUInteger maxDim = (m_ResizeTargetWidth > m_ResizeTargetHeight) ? m_ResizeTargetWidth : m_ResizeTargetHeight;
-                NSUInteger mipLevels = 1 + (NSUInteger)floor(log2((double)maxDim));
-                targetDesc.mipmapLevelCount = mipLevels;
-                targetDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
-                m_ProcessedTexture = [m_Device newTextureWithDescriptor:targetDesc];
-                
-                // Reset view
-                m_ViewZoom = 1.0f;
-                m_ViewOffset[0] = 0.0f;
-                m_ViewOffset[1] = 0.0f;
-                m_RotationAngle = 0;
-                
-                // Trigger reprocess
-                m_ImageDirty = true;
-                m_RawHistogramDirty = true;
+                ResizeImage(m_ResizeTargetWidth, m_ResizeTargetHeight);
             }
             
             initialized = false;
@@ -773,7 +793,7 @@ void UmbriferaApp::RenderUI() {
         }
         
         ImGui::GetWindowDrawList()->AddImageQuad(
-            (ImTextureID)m_ProcessedTexture,
+            (ImTextureID)m_ProcessedTexture.GetImGuiTexture(),
             p_tl, p_tr, p_br, p_bl,
             uv_tl, uv_tr, uv_br, uv_bl
         );
@@ -1325,7 +1345,7 @@ void UmbriferaApp::RenderUI() {
             // LEFT: Crop button
             if (m_CropTexture) {
                 ImGui::SetCursorScreenPos(ImVec2(leftBtnX, iconBtnY));
-                if (ImGui::ImageButton("##CropBtn", (ImTextureID)m_CropTexture, ImVec2(iconSize, iconSize))) {
+                if (ImGui::ImageButton("##CropBtn", (ImTextureID)m_CropTexture.GetImGuiTexture(), ImVec2(iconSize, iconSize))) {
                     m_CropMode = true;
                     m_CropRatioIndex = 0;
                     m_CropRect[0] = 0.0f; m_CropRect[1] = 0.0f;
@@ -1341,7 +1361,7 @@ void UmbriferaApp::RenderUI() {
             // LEFT: Rotate Counter-Clockwise
             if (m_RotateCCWTexture) {
                 ImGui::SetCursorScreenPos(ImVec2(leftBtnX, iconBtnY));
-                if (ImGui::ImageButton("##RotateCCW", (ImTextureID)m_RotateCCWTexture, ImVec2(iconSize, iconSize))) {
+                if (ImGui::ImageButton("##RotateCCW", (ImTextureID)m_RotateCCWTexture.GetImGuiTexture(), ImVec2(iconSize, iconSize))) {
                     m_RotationAngle = (m_RotationAngle + 270) % 360;
                     m_ViewZoom = 1.0f;
                     m_ViewOffset[0] = 0.0f;
@@ -1354,7 +1374,7 @@ void UmbriferaApp::RenderUI() {
             // LEFT: Rotate Clockwise
             if (m_RotateCWTexture) {
                 ImGui::SetCursorScreenPos(ImVec2(leftBtnX, iconBtnY));
-                if (ImGui::ImageButton("##RotateCW", (ImTextureID)m_RotateCWTexture, ImVec2(iconSize, iconSize))) {
+                if (ImGui::ImageButton("##RotateCW", (ImTextureID)m_RotateCWTexture.GetImGuiTexture(), ImVec2(iconSize, iconSize))) {
                     m_RotationAngle = (m_RotationAngle + 90) % 360;
                     m_ViewZoom = 1.0f;
                     m_ViewOffset[0] = 0.0f;
@@ -1375,7 +1395,7 @@ void UmbriferaApp::RenderUI() {
                 float btnCenterX = (btnMin.x + btnMax.x) * 0.5f;
                 float btnCenterY = (btnMin.y + btnMax.y) * 0.5f;
                 ImVec2 iconPos = ImVec2(btnCenterX - iconSize * 0.5f, btnCenterY - iconSize * 0.5f);
-                ImGui::GetWindowDrawList()->AddImage((ImTextureID)m_CropRotateTexture, iconPos, ImVec2(iconPos.x + iconSize, iconPos.y + iconSize));
+                ImGui::GetWindowDrawList()->AddImage((ImTextureID)m_CropRotateTexture.GetImGuiTexture(), iconPos, ImVec2(iconPos.x + iconSize, iconPos.y + iconSize));
                 
                 if (ImGui::IsItemActive() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                     m_ArbitraryRotateDragging = true;
@@ -1395,7 +1415,7 @@ void UmbriferaApp::RenderUI() {
             // Compare button (rightmost) - shows original while held
             if (m_CompareTexture) {
                 ImGui::SetCursorScreenPos(ImVec2(rightBtnX, iconBtnY));
-                ImGui::ImageButton("##Compare", (ImTextureID)m_CompareTexture, ImVec2(iconSize, iconSize));
+                ImGui::ImageButton("##Compare", (ImTextureID)m_CompareTexture.GetImGuiTexture(), ImVec2(iconSize, iconSize));
                 bool wasComparing = m_CompareMode;
                 m_CompareMode = ImGui::IsItemActive();
                 if (m_CompareMode != wasComparing) {
@@ -1408,7 +1428,7 @@ void UmbriferaApp::RenderUI() {
             // Fit Screen button
             if (m_FitScreenTexture) {
                 ImGui::SetCursorScreenPos(ImVec2(rightBtnX, iconBtnY));
-                if (ImGui::ImageButton("##FitScreen", (ImTextureID)m_FitScreenTexture, ImVec2(iconSize, iconSize))) {
+                if (ImGui::ImageButton("##FitScreen", (ImTextureID)m_FitScreenTexture.GetImGuiTexture(), ImVec2(iconSize, iconSize))) {
                     m_ViewZoom = 1.0f;
                     m_ViewOffset[0] = 0.0f;
                     m_ViewOffset[1] = 0.0f;
@@ -1424,7 +1444,7 @@ void UmbriferaApp::RenderUI() {
                     ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.3f);
                 }
                 ImGui::SetCursorScreenPos(ImVec2(rightBtnX, iconBtnY));
-                if (ImGui::ImageButton("##Undo", (ImTextureID)m_UndoTexture, ImVec2(iconSize, iconSize))) {
+                if (ImGui::ImageButton("##Undo", (ImTextureID)m_UndoTexture.GetImGuiTexture(), ImVec2(iconSize, iconSize))) {
                     if (canUndo) {
                         m_UndoPending = true; // Defer to next frame to avoid texture-in-use issues
                     }
@@ -1621,33 +1641,19 @@ void UmbriferaApp::RenderUI() {
         bool changed = false;
         
         // Histogram Display
-        // Update histogram data only when GPU processing is complete
-        // This freezes the histogram during processing to ensure smooth transitions
-        if (m_HistogramBufferDisplay && m_HistogramProcessingComplete) {
-            uint32_t* ptr = (uint32_t*)[m_HistogramBufferDisplay contents];
-            
-            // Ensure size
-            if (m_Histogram.size() != 256) m_Histogram.resize(256, 0.0f);
-            
-            // 1. Read and Linear Scaling
-            float maxVal = 0.0f;
-            
-            // Find max value in the meaningful range (1-254) to avoid clipping spikes dominating
-            for (int i = 0; i < 256; i++) {
-                float currentCount = (float)ptr[i];
-                
-                // Direct read (smoothing is handled in display loop)
-                m_Histogram[i] = currentCount;
-                
-                // Calculate max for scaling
-                if (i > 0 && i < 255) {
-                    if (m_Histogram[i] > maxVal) maxVal = m_Histogram[i];
+        // Read histogram from GPU buffer (computed asynchronously)
+        if (m_HistogramBufferDisplay) {
+            void* mapped = GetBufferContents(m_HistogramBufferDisplay);
+            if (mapped) {
+                uint32_t* counts = (uint32_t*)mapped;
+                if (m_Histogram.size() != 256) m_Histogram.resize(256);
+                for (int i = 0; i < 256; i++) {
+                    m_Histogram[i] = (float)counts[i];
                 }
+                vkUnmapMemory(m_Device, m_HistogramBufferDisplay.memory);
             }
-            
-            if (maxVal <= 0.0f) maxVal = 1.0f;
         } else {
-            // While processing, use cached histogram data
+            // No histogram yet
             if (m_Histogram.empty()) {
                 m_Histogram.resize(256, 0.0f);
             }

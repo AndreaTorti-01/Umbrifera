@@ -9,8 +9,9 @@
 #include <mutex>
 #include <atomic>
 #include <thread>
+#include <condition_variable>
 
-#include <Metal/Metal.h>
+#include "GpuTypes.h"
 #include <libraw/libraw.h>
 
 class FileNavigator {
@@ -18,14 +19,16 @@ public:
     FileNavigator();
     ~FileNavigator();
 
-    void Init(id<MTLDevice> device);
+    void Init(GpuDevice device, 
+              std::function<GpuTexture(const std::string&)> assetLoader = nullptr,
+              std::function<GpuTexture(int, int, const void*)> textureCreator = nullptr);
     void Render(std::function<void(std::string)> onFileSelected);
     
     // Set the root directory explicitly
     void SetRootPath(const std::string& path);
     
     // Set Logo
-    void SetLogo(id<MTLTexture> logo);
+    void SetLogo(GpuTexture logo);
     
     // Disk cache management
     void ClearThumbnailCache();
@@ -35,12 +38,12 @@ private:
     void RenderPathBar();
     
     // Thumbnail Management
-    id<MTLTexture> GetThumbnail(const std::filesystem::path& path);
+    GpuTexture GetThumbnail(const std::filesystem::path& path);
     void QueueThumbnailLoad(const std::filesystem::path& path);
     void ThumbnailLoaderThread();
 
 private:
-    id<MTLDevice> m_Device = nil;
+    GpuDevice m_Device = {};
     
     // Navigation State
     std::filesystem::path m_RootPath;
@@ -51,7 +54,7 @@ private:
     
     // Thumbnail Cache
     struct ThumbnailInfo {
-        id<MTLTexture> texture = nil;
+        GpuTexture texture = {};
         bool isLoading = false;
         bool isLoaded = false;
     };
@@ -61,11 +64,11 @@ private:
     std::string m_CacheDir;
 
     // Folder Icons
-    id<MTLTexture> m_FolderOpenTexture = nil;
-    id<MTLTexture> m_FolderClosedTexture = nil;
-    id<MTLTexture> m_FolderIconTexture = nil;
-    id<MTLTexture> m_UpArrowTexture = nil;
-    id<MTLTexture> m_LogoTexture = nil;
+    GpuTexture m_FolderOpenTexture = {};
+    GpuTexture m_FolderClosedTexture = {};
+    GpuTexture m_FolderIconTexture = {};
+    GpuTexture m_UpArrowTexture = {};
+    GpuTexture m_LogoTexture = {};
     
     // Async Loading
     std::vector<std::filesystem::path> m_LoadQueue;
@@ -76,4 +79,5 @@ private:
     
     // Callback  for file selection
     std::function<void(std::string)> m_OnFileSelected;
+    std::function<GpuTexture(int, int, const void*)> m_TextureCreator;
 };

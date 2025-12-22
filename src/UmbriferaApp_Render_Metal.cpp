@@ -2,6 +2,8 @@
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 
+#ifdef __APPLE__
+
 #define GLFW_EXPOSE_NATIVE_COCOA
 #include "imgui_impl_metal.h"
 #include <GLFW/glfw3.h>
@@ -13,7 +15,7 @@
 // This file handles the Metal (GPU) rendering logic.
 // It sets up the graphics pipeline, shaders, and executes the drawing commands.
 
-void UmbriferaApp::InitMetal() {
+void UmbriferaApp::InitGraphicsBackend() {
     // 1. Create the Metal Device (GPU interface)
     m_Device = MTLCreateSystemDefaultDevice();
     m_CommandQueue = [m_Device newCommandQueue];
@@ -31,13 +33,15 @@ void UmbriferaApp::InitMetal() {
 
     // 3. Create Histogram Buffer (Shared memory between CPU and GPU)
     // Double buffering to prevent reading zeros while GPU clears/writes
-    m_HistogramBuffer = [m_Device newBufferWithLength:256 * sizeof(uint32_t) options:MTLResourceStorageModeShared];
-    // Double buffering to prevent reading zeros while GPU clears/writes
-    m_HistogramBuffer = [m_Device newBufferWithLength:256 * sizeof(uint32_t) options:MTLResourceStorageModeShared];
-    m_HistogramBufferDisplay = [m_Device newBufferWithLength:256 * sizeof(uint32_t) options:MTLResourceStorageModeShared];
+    m_HistogramBuffer.buffer = [m_Device newBufferWithLength:256 * sizeof(uint32_t) options:MTLResourceStorageModeShared];
+    m_HistogramBuffer.size = 256 * sizeof(uint32_t);
+    
+    m_HistogramBufferDisplay.buffer = [m_Device newBufferWithLength:256 * sizeof(uint32_t) options:MTLResourceStorageModeShared];
+    m_HistogramBufferDisplay.size = 256 * sizeof(uint32_t);
     
     // Raw Histogram Buffer (Shared)
-    m_RawHistogramBuffer = [m_Device newBufferWithLength:256 * sizeof(uint32_t) options:MTLResourceStorageModeShared];
+    m_RawHistogramBuffer.buffer = [m_Device newBufferWithLength:256 * sizeof(uint32_t) options:MTLResourceStorageModeShared];
+    m_RawHistogramBuffer.size = 256 * sizeof(uint32_t);
 
     // 4. Compile Shaders
     NSError* error = nil;
@@ -118,7 +122,7 @@ void UmbriferaApp::CleanupMetal() {
 }
 
 void UmbriferaApp::ProcessImage() {
-    if (!m_RawTexture || !m_ProcessedTexture) return;
+    if (!m_RawTexture.texture || !m_ProcessedTexture.texture) return;
 
     // Create a command buffer for GPU commands
     id<MTLCommandBuffer> cb = [m_CommandQueue commandBuffer];
@@ -130,7 +134,7 @@ void UmbriferaApp::ProcessImage() {
         NSUInteger grainH = m_ProcessedTexture.height;
         
         // Create or recreate grain texture if size changed
-        if (!m_GrainTexture || 
+        if (!m_GrainTexture.texture || 
             m_GrainTexture.width != grainW || 
             m_GrainTexture.height != grainH) {
             
@@ -141,7 +145,9 @@ void UmbriferaApp::ProcessImage() {
                 mipmapped:NO];
             grainDesc.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
             grainDesc.storageMode = MTLStorageModePrivate;
-            m_GrainTexture = [m_Device newTextureWithDescriptor:grainDesc];
+            m_GrainTexture.texture = [m_Device newTextureWithDescriptor:grainDesc];
+            m_GrainTexture.width = (uint32_t)grainW;
+            m_GrainTexture.height = (uint32_t)grainH;
         }
         
         // Generate grain pattern
@@ -161,7 +167,7 @@ void UmbriferaApp::ProcessImage() {
         
         id<MTLComputeCommandEncoder> grainEncoder = [cb computeCommandEncoder];
         [grainEncoder setComputePipelineState:m_GrainPSO];
-        [grainEncoder setTexture:m_GrainTexture atIndex:0];
+        [grainEncoder setTexture:m_GrainTexture.texture atIndex:0];
         [grainEncoder setBytes:&grainParams length:sizeof(GrainParams) atIndex:0];
         
         MTLSize threadsPerThreadgroup = MTLSizeMake(16, 16, 1);
@@ -175,7 +181,7 @@ void UmbriferaApp::ProcessImage() {
     // --- Pass 1: Image Processing (Render to Texture) ---
     // We render the raw texture into the processed texture, applying exposure/color shaders.
     MTLRenderPassDescriptor* rpd = [MTLRenderPassDescriptor renderPassDescriptor];
-    rpd.colorAttachments[0].texture = m_ProcessedTexture;
+    rpd.colorAttachments[0].texture = m_ProcessedTexture.texture;
     rpd.colorAttachments[0].loadAction = MTLLoadActionClear;
     rpd.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
     rpd.colorAttachments[0].storeAction = MTLStoreActionStore;
@@ -202,29 +208,29 @@ void UmbriferaApp::ProcessImage() {
         [re setFragmentBytes:&m_Uniforms length:sizeof(Uniforms) atIndex:0];
     }
     
-    [re setFragmentTexture:m_RawTexture atIndex:0];
-    [re setFragmentTexture:m_GrainTexture atIndex:1];  // Pre-computed grain texture
+    [re setFragmentTexture:m_RawTexture.texture atIndex:0];
+    [re setFragmentTexture:m_GrainTexture.texture atIndex:1];  // Pre-computed grain texture
     [re drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
     [re endEncoding];
     
     // --- Pass 1.5: Generate Mipmaps ---
     // This ensures high-quality downsampling when zoomed out.
     id<MTLBlitCommandEncoder> mipBlit = [cb blitCommandEncoder];
-    [mipBlit generateMipmapsForTexture:m_ProcessedTexture];
+    [mipBlit generateMipmapsForTexture:m_ProcessedTexture.texture];
     [mipBlit endEncoding];
     
     // --- Pass 2: Compute Histogram ---
-    if (m_HistogramPSO && m_HistogramBuffer) {
+    if (m_HistogramPSO && m_HistogramBuffer.buffer) {
         // Clear Histogram Buffer first
         id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
-        [blit fillBuffer:m_HistogramBuffer range:NSMakeRange(0, 256 * sizeof(uint32_t)) value:0];
+        [blit fillBuffer:m_HistogramBuffer.buffer range:NSMakeRange(0, 256 * sizeof(uint32_t)) value:0];
         [blit endEncoding];
         
         // Run Compute Shader
         id<MTLComputeCommandEncoder> ce = [cb computeCommandEncoder];
         [ce setComputePipelineState:m_HistogramPSO];
-        [ce setTexture:m_ProcessedTexture atIndex:0];
-        [ce setBuffer:m_HistogramBuffer offset:0 atIndex:0];
+        [ce setTexture:m_ProcessedTexture.texture atIndex:0];
+        [ce setBuffer:m_HistogramBuffer.buffer offset:0 atIndex:0];
         
         NSUInteger w = m_ProcessedTexture.width;
         NSUInteger h = m_ProcessedTexture.height;
@@ -238,10 +244,10 @@ void UmbriferaApp::ProcessImage() {
         // This ensures the UI reads a stable, fully computed histogram from the previous frame (or this frame, synchronized)
         // Since we use StorageModeShared, the CPU can read this buffer directly.
         // We copy from the working buffer (m_HistogramBuffer) to the display buffer (m_HistogramBufferDisplay).
-        if (m_HistogramBufferDisplay) {
+        if (m_HistogramBufferDisplay.buffer) {
             id<MTLBlitCommandEncoder> blitHist = [cb blitCommandEncoder];
-            [blitHist copyFromBuffer:m_HistogramBuffer sourceOffset:0 
-                            toBuffer:m_HistogramBufferDisplay destinationOffset:0 
+            [blitHist copyFromBuffer:m_HistogramBuffer.buffer sourceOffset:0 
+                            toBuffer:m_HistogramBufferDisplay.buffer destinationOffset:0 
                                 size:256 * sizeof(uint32_t)];
             [blitHist endEncoding];
         }
@@ -261,6 +267,75 @@ void UmbriferaApp::ProcessImage() {
     [cb commit];
 }
 
+void UmbriferaApp::ResizeImage(int targetWidth, int targetHeight) {
+    if (!m_RawTexture.texture || !m_Device || !m_CommandQueue) return;
+    
+    uint32_t originalWidth = m_RawTexture.width;
+    uint32_t originalHeight = m_RawTexture.height;
+    
+    // Create new resized raw texture
+    MTLTextureDescriptor* newRawDesc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Unorm 
+        width:targetWidth height:targetHeight mipmapped:NO];
+    newRawDesc.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+    id<MTLTexture> newRawTexture = [m_Device newTextureWithDescriptor:newRawDesc];
+    
+    // Run box filter downscale compute shader
+    struct DownscaleParams {
+        uint32_t srcWidth;
+        uint32_t srcHeight;
+        uint32_t dstWidth;
+        uint32_t dstHeight;
+    } params = {
+        (uint32_t)originalWidth,
+        (uint32_t)originalHeight,
+        (uint32_t)targetWidth,
+        (uint32_t)targetHeight
+    };
+    
+    id<MTLCommandBuffer> cb = [m_CommandQueue commandBuffer];
+    id<MTLComputeCommandEncoder> ce = [cb computeCommandEncoder];
+    [ce setComputePipelineState:m_Lanczos3PSO];
+    [ce setTexture:m_RawTexture.texture atIndex:0];
+    [ce setTexture:newRawTexture atIndex:1];
+    [ce setBytes:&params length:sizeof(params) atIndex:0];
+    
+    MTLSize threadsPerThreadgroup = MTLSizeMake(16, 16, 1);
+    MTLSize threadgroups = MTLSizeMake(
+        (targetWidth + 15) / 16,
+        (targetHeight + 15) / 16, 1);
+    
+    [ce dispatchThreadgroups:threadgroups threadsPerThreadgroup:threadsPerThreadgroup];
+    [ce endEncoding];
+    [cb commit];
+    [cb waitUntilCompleted];
+    
+    // Replace raw texture
+    m_RawTexture.texture = newRawTexture;
+    m_RawTexture.width = (uint32_t)targetWidth;
+    m_RawTexture.height = (uint32_t)targetHeight;
+    
+    // Create new processed texture
+    MTLTextureDescriptor* targetDesc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm 
+        width:targetWidth height:targetHeight mipmapped:YES];
+    NSUInteger maxDim = (targetWidth > targetHeight) ? targetWidth : targetHeight;
+    NSUInteger mipLevels = 1 + (NSUInteger)floor(log2((double)maxDim));
+    targetDesc.mipmapLevelCount = mipLevels;
+    targetDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+    m_ProcessedTexture.texture = [m_Device newTextureWithDescriptor:targetDesc];
+    m_ProcessedTexture.width = (uint32_t)targetWidth;
+    m_ProcessedTexture.height = (uint32_t)targetHeight;
+    
+    // Reset view
+    m_ViewZoom = 1.0f;
+    m_ViewOffset[0] = 0.0f;
+    m_ViewOffset[1] = 0.0f;
+    m_RotationAngle = 0;
+    
+    // Trigger reprocess
+    m_ImageDirty = true;
+    m_RawHistogramDirty = true;
+}
+
 void UmbriferaApp::RenderFrame() {
     @autoreleasepool {
         // 1. Check if a new image has been loaded in the background thread
@@ -277,17 +352,19 @@ void UmbriferaApp::RenderFrame() {
             NSUInteger rawMipLevels = 1 + (NSUInteger)floor(log2((double)rawMaxDim));
             textureDescriptor.mipmapLevelCount = rawMipLevels;
             textureDescriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
-            m_RawTexture = [m_Device newTextureWithDescriptor:textureDescriptor];
+            m_RawTexture.texture = [m_Device newTextureWithDescriptor:textureDescriptor];
+            m_RawTexture.width = (uint32_t)m_PendingWidth;
+            m_RawTexture.height = (uint32_t)m_PendingHeight;
             
             // Upload data to GPU
             MTLRegion region = MTLRegionMake2D(0, 0, m_PendingWidth, m_PendingHeight);
             // Bytes per row = Width * 4 channels * 2 bytes (16-bit)
-            [m_RawTexture replaceRegion:region mipmapLevel:0 withBytes:m_PendingTextureData16.data() bytesPerRow:m_PendingWidth * 8];
+            [m_RawTexture.texture replaceRegion:region mipmapLevel:0 withBytes:m_PendingTextureData16.data() bytesPerRow:m_PendingWidth * 8];
             
             // Generate mipmaps for raw texture (needed for Clarity/Texture)
             id<MTLCommandBuffer> mipCB = [m_CommandQueue commandBuffer];
             id<MTLBlitCommandEncoder> mipBlit = [mipCB blitCommandEncoder];
-            [mipBlit generateMipmapsForTexture:m_RawTexture];
+            [mipBlit generateMipmapsForTexture:m_RawTexture.texture];
             [mipBlit endEncoding];
             [mipCB commit];
             [mipCB waitUntilCompleted];
@@ -302,7 +379,9 @@ void UmbriferaApp::RenderFrame() {
             targetDesc.mipmapLevelCount = mipLevels;
             
             targetDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
-            m_ProcessedTexture = [m_Device newTextureWithDescriptor:targetDesc];
+            m_ProcessedTexture.texture = [m_Device newTextureWithDescriptor:targetDesc];
+            m_ProcessedTexture.width = (uint32_t)m_PendingWidth;
+            m_ProcessedTexture.height = (uint32_t)m_PendingHeight;
             
             // Create a sampler state for linear filtering
             // This ensures smooth image display when zooming/resizing
@@ -619,82 +698,132 @@ void UmbriferaApp::RenderFrame() {
     }
 }
 
-void UmbriferaApp::PushUndoState() {
-    if (!m_RawTexture) return;
-    
-    NSUInteger width = m_RawTexture.width;
-    NSUInteger height = m_RawTexture.height;
-    NSUInteger bytesPerRow = width * 4 * sizeof(uint16_t); // RGBA16
-    
-    UndoState state;
-    state.width = (int)width;
-    state.height = (int)height;
-    state.textureData.resize(width * height * 4); // 4 components per pixel
-    
-    // Read texture data from GPU
-    MTLRegion region = MTLRegionMake2D(0, 0, width, height);
-    [m_RawTexture getBytes:state.textureData.data() bytesPerRow:bytesPerRow fromRegion:region mipmapLevel:0];
-    
-    // Add to undo stack, removing oldest if at max capacity
-    if (m_UndoStack.size() >= MAX_UNDO_STATES) {
-        m_UndoStack.pop_front();
-    }
-    m_UndoStack.push_back(std::move(state));
+void UmbriferaApp::GetTextureBytes(GpuTexture& texture, void* outBytes, size_t bytesPerRow) {
+    if (!texture.texture) return;
+    MTLRegion region = MTLRegionMake2D(0, 0, texture.width, texture.height);
+    [texture.texture getBytes:outBytes bytesPerRow:bytesPerRow fromRegion:region mipmapLevel:0];
 }
 
-void UmbriferaApp::Undo() {
-    if (m_UndoStack.empty() || !m_Device || !m_CommandQueue) return;
+void* UmbriferaApp::GetBufferContents(GpuBuffer& buffer) {
+    if (!buffer.buffer) return nullptr;
+    return [buffer.buffer contents];
+}
+
+GpuTexture UmbriferaApp::CreateTexture(int width, int height, GpuPixelFormat format, bool mipmapped, bool renderTarget) {
+    GpuTexture tex = {};
+    MTLPixelFormat mtlFormat = MTLPixelFormatRGBA8Unorm;
+    if (format == GpuPixelFormat::RGBA16Unorm) mtlFormat = MTLPixelFormatRGBA16Unorm;
+    else if (format == GpuPixelFormat::BGRA8Unorm) mtlFormat = MTLPixelFormatBGRA8Unorm;
     
-    UndoState state = std::move(m_UndoStack.back());
-    m_UndoStack.pop_back();
+    MTLTextureDescriptor* desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:mtlFormat 
+        width:width height:height mipmapped:mipmapped];
     
-    NSUInteger width = state.width;
-    NSUInteger height = state.height;
+    if (renderTarget) {
+        desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+    } else {
+        desc.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+    }
     
-    // Create new raw texture
-    MTLTextureDescriptor* rawDesc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Unorm 
-        width:width height:height mipmapped:YES];
-    NSUInteger maxDim = (width > height) ? width : height;
-    NSUInteger mipLevels = 1 + (NSUInteger)floor(log2((double)maxDim));
-    rawDesc.mipmapLevelCount = mipLevels;
-    rawDesc.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
-    id<MTLTexture> newRawTexture = [m_Device newTextureWithDescriptor:rawDesc];
+    if (mipmapped) {
+        NSUInteger maxDim = (width > height) ? width : height;
+        desc.mipmapLevelCount = 1 + (NSUInteger)floor(log2((double)maxDim));
+    }
     
-    if (!newRawTexture) return;
-    
-    // Upload texture data
-    NSUInteger bytesPerRow = width * 4 * sizeof(uint16_t);
-    MTLRegion region = MTLRegionMake2D(0, 0, width, height);
-    [newRawTexture replaceRegion:region mipmapLevel:0 withBytes:state.textureData.data() bytesPerRow:bytesPerRow];
-    
-    // Generate mipmaps
+    tex.texture = [m_Device newTextureWithDescriptor:desc];
+    tex.width = (uint32_t)width;
+    tex.height = (uint32_t)height;
+    return tex;
+}
+
+void UmbriferaApp::UpdateTexture(GpuTexture& texture, const void* data, size_t bytesPerRow) {
+    if (!texture.texture) return;
+    MTLRegion region = MTLRegionMake2D(0, 0, texture.width, texture.height);
+    [texture.texture replaceRegion:region mipmapLevel:0 withBytes:data bytesPerRow:bytesPerRow];
+}
+
+void UmbriferaApp::GenerateMipmaps(GpuTexture& texture) {
+    if (!texture.texture) return;
     id<MTLCommandBuffer> cb = [m_CommandQueue commandBuffer];
     id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
-    [blit generateMipmapsForTexture:newRawTexture];
+    [blit generateMipmapsForTexture:texture.texture];
     [blit endEncoding];
     [cb commit];
-    [cb waitUntilCompleted];
-    
-    // Replace raw texture
-    m_RawTexture = newRawTexture;
-    
-    // Create new processed texture
-    MTLTextureDescriptor* targetDesc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm 
-        width:width height:height mipmapped:YES];
-    targetDesc.mipmapLevelCount = mipLevels;
-    targetDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
-    m_ProcessedTexture = [m_Device newTextureWithDescriptor:targetDesc];
-    
-    // Regenerate grain for new resize dimensions
-    m_GrainNeedsRegeneration = true;
-    
-    // Reset view
-    m_ViewZoom = 1.0f;
-    m_ViewOffset[0] = 0.0f;
-    m_ViewOffset[1] = 0.0f;
-    m_RotationAngle = 0;
-    
-    // Trigger reprocess
-    m_ImageDirty = true;
-    m_RawHistogramDirty = true;
 }
+
+GpuTexture UmbriferaApp::LoadAssetTexture(const std::string& filename) {
+    GpuTexture tex = {};
+    @autoreleasepool {
+        std::string path = "assets/" + filename;
+        NSString* nsPath = [NSString stringWithUTF8String:path.c_str()];
+        NSImage* image = [[NSImage alloc] initWithContentsOfFile:nsPath];
+        
+        if (!image) {
+            // Try from parent directory (running from build folder)
+            path = "../assets/" + filename;
+            nsPath = [NSString stringWithUTF8String:path.c_str()];
+            image = [[NSImage alloc] initWithContentsOfFile:nsPath];
+        }
+        
+        if (!image) {
+            std::cerr << "Failed to load asset: " << filename << std::endl;
+            return tex;
+        }
+        
+        CGImageRef cgImage = [image CGImageForProposedRect:nil context:nil hints:nil];
+        NSUInteger width = CGImageGetWidth(cgImage);
+        NSUInteger height = CGImageGetHeight(cgImage);
+        
+        MTLTextureDescriptor* textureDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:width height:height mipmapped:NO];
+        tex.texture = [m_Device newTextureWithDescriptor:textureDescriptor];
+        tex.width = (uint32_t)width;
+        tex.height = (uint32_t)height;
+        
+        NSBitmapImageRep* rep = [[NSBitmapImageRep alloc] initWithCGImage:cgImage];
+        MTLRegion region = MTLRegionMake2D(0, 0, width, height);
+        [tex.texture replaceRegion:region mipmapLevel:0 withBytes:[rep bitmapData] bytesPerRow:[rep bytesPerRow]];
+    }
+    return tex;
+}
+
+void UmbriferaApp::LoadLogo(const std::string& path) {
+    @autoreleasepool {
+        NSString* nsPath = [NSString stringWithUTF8String:path.c_str()];
+        NSImage* image = [[NSImage alloc] initWithContentsOfFile:nsPath];
+        if (!image) {
+            // Try absolute path if relative fails (dev environment)
+            NSString* currentDir = [[NSFileManager defaultManager] currentDirectoryPath];
+            NSString* absPath = [currentDir stringByAppendingPathComponent:nsPath];
+            image = [[NSImage alloc] initWithContentsOfFile:absPath];
+        }
+        
+        if (image) {
+            // Convert to CGImage
+            CGImageRef cgImage = [image CGImageForProposedRect:nil context:nil hints:nil];
+            NSUInteger width = CGImageGetWidth(cgImage);
+            NSUInteger height = CGImageGetHeight(cgImage);
+            
+            // Create Metal Texture
+            MTLTextureDescriptor* textureDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:width height:height mipmapped:YES];
+            m_LogoTexture.texture = [m_Device newTextureWithDescriptor:textureDescriptor];
+            m_LogoTexture.width = (uint32_t)width;
+            m_LogoTexture.height = (uint32_t)height;
+            
+            // Get raw data
+            NSBitmapImageRep* rep = [[NSBitmapImageRep alloc] initWithCGImage:cgImage];
+            
+            MTLRegion region = MTLRegionMake2D(0, 0, width, height);
+            [m_LogoTexture.texture replaceRegion:region mipmapLevel:0 withBytes:[rep bitmapData] bytesPerRow:[rep bytesPerRow]];
+            
+            // Generate mipmaps for smooth scaling
+            id<MTLCommandBuffer> commandBuffer = [m_CommandQueue commandBuffer];
+            id<MTLBlitCommandEncoder> blitEncoder = [commandBuffer blitCommandEncoder];
+            [blitEncoder generateMipmapsForTexture:m_LogoTexture.texture];
+            [blitEncoder endEncoding];
+            [commandBuffer commit];
+        } else {
+            std::cerr << "Failed to load logo: " << path << std::endl;
+        }
+    }
+}
+
+#endif // __APPLE__

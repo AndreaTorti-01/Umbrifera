@@ -255,9 +255,27 @@ Icons should be PNG format, located in `assets/`:
 - `dropper_eye_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png`: Eyedropper for HSL hue sampling
 - `close_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png`: Close/remove button (X icon)
 
+### Vulkan Backend (Windows)
+- **Graphics API**: Vulkan 1.3 (replacing Metal)
+- **Shaders**: GLSL compiled to SPIR-V via `glslc` (Vulkan SDK)
+- **Synchronization**: Uses `VkFence` and `std::recursive_mutex m_VulkanResourceMutex` for granular sync. `BeginSingleTimeCommands` and `EndSingleTimeCommands` acquire the lock to prevent deadlocks when called from within other locked contexts.
+- **Memory**: Uniform Buffers (UBO) for `Uniforms` to support complex HSL arrays
+- **Pipelines**:
+  - `process.comp`: Main processing (Exposure, WB, Denoise, Sharpen, HSL, Clarity, Vignette, Grain overlay)
+  - `histogram.comp`: Luminance histogram computation
+  - `grain.comp`: Multi-layer film grain generation
+  - `resize.comp`: Box filter downscaling
+  - `rotate.comp`: Geometric rotation (inscribed rectangle)
+- **Texture Formats**:
+  - `m_RawTexture`: `VK_FORMAT_R16G16B16A16_UNORM`
+  - `m_ProcessedTexture`: `VK_FORMAT_B8G8R8A8_UNORM` (matches Metal's BGRA for export consistency)
+- **Export**: `GetTextureBytes` handles layout transitions from `SHADER_READ_ONLY_OPTIMAL` to `TRANSFER_SRC_OPTIMAL` safely.
+- **Build**: `build.bat` (Windows) and `build.sh` (macOS) in root. Shader compilation is integrated into the build process via GLSL→SPIR-V.
+- **Windows-specific**: The `windows/` folder is no longer used; it was kept from development and contained only example code. All build scripts are in the root directory.
+
 ---
 
-**Last Updated**: 2025-12-07
+**Last Updated**: 2025-12-22
 **Tip**: Keep this file updated as you work on the application. Document new patterns, gotchas, and architectural decisions.
 
 ### Code Hygiene

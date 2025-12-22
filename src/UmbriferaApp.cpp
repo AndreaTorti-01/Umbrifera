@@ -4,8 +4,14 @@
 #include "imgui_impl_glfw.h"
 #include <stdio.h>
 
+#ifdef __APPLE__
 #define GLFW_EXPOSE_NATIVE_COCOA
 #include "imgui_impl_metal.h"
+#else
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include "imgui_impl_vulkan.h"
+#endif
+
 #include <GLFW/glfw3.h>
 #include <GLFW/glfw3native.h>
 #include <iostream>
@@ -50,6 +56,14 @@ UmbriferaApp::UmbriferaApp() {
     m_Uniforms.hsl_enabled = 0;
     for(int i=0; i<15; ++i) m_Uniforms.hsl_adjustments[i] = {0.0f, 0.0f, 0.0f, 0.0f};
     
+#ifndef __APPLE__
+    m_VulkanInstance = VK_NULL_HANDLE;
+    m_VulkanPhysicalDevice = VK_NULL_HANDLE;
+    m_VulkanSurface = VK_NULL_HANDLE;
+    m_VulkanDescriptorPool = VK_NULL_HANDLE;
+    memset(&m_VulkanMainWindowData, 0, sizeof(m_VulkanMainWindowData));
+#endif
+
     LoadPresets();
     
     m_FileNavigator = std::make_unique<FileNavigator>();
@@ -60,16 +74,39 @@ UmbriferaApp::~UmbriferaApp() {
 }
 
 bool UmbriferaApp::Init() {
+    printf("Initializing GLFW...\n");
     glfwSetErrorCallback(glfw_error_callback);
-    if (!glfwInit())
+    if (!glfwInit()) {
+        fprintf(stderr, "Failed to initialize GLFW\n");
         return false;
+    }
 
+    printf("Initializing Window...\n");
     InitWindow();
-    InitGraphics(); // Sets up m_Device
-    InitImGui();
-    
-    m_FileNavigator->Init(m_Device);
+    if (!m_Window) {
+        fprintf(stderr, "Failed to create window\n");
+        return false;
+    }
 
+    printf("Initializing ImGui...\n");
+    InitImGui();
+
+    printf("Initializing Graphics...\n");
+    InitGraphics(); // Sets up m_Device
+    
+    printf("Initializing File Navigator...\n");
+    m_FileNavigator->Init(m_Device, 
+        [this](const std::string& filename) {
+            return this->LoadAssetTexture("assets/" + filename);
+        },
+        [this](int w, int h, const void* data) {
+            GpuTexture tex = this->CreateTexture(w, h, GpuPixelFormat::RGBA8Unorm, false, false);
+            this->UpdateTexture(tex, data, w * 4);
+            return tex;
+        }
+    );
+
+    printf("Initialization complete.\n");
     return true;
 }
 
@@ -79,7 +116,9 @@ void UmbriferaApp::InitWindow() {
     glfwWindowHint(GLFW_MAXIMIZED, GLFW_TRUE);
     m_Window = glfwCreateWindow(1280, 720, "Umbrifera", nullptr, nullptr);
     
+#ifdef __APPLE__
     SetupMacOSMenu();
+#endif
 }
 
 void UmbriferaApp::InitImGui() {
@@ -91,18 +130,28 @@ void UmbriferaApp::InitImGui() {
     io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
 
     // Get display scale for Retina/HiDPI support
-    NSScreen *mainScreen = [NSScreen mainScreen];
-    CGFloat scale = [mainScreen backingScaleFactor];
+    float scale = 1.0f;
+#ifdef __APPLE__
+    @autoreleasepool {
+        NSScreen *mainScreen = [NSScreen mainScreen];
+        scale = [mainScreen backingScaleFactor];
+    }
+#else
+    float xscale, yscale;
+    glfwGetWindowContentScale(m_Window, &xscale, &yscale);
+    scale = xscale;
+#endif
     
     // Use standard font size (the rendering will be scaled by ImGui)
     float fontSize = 16.0f;
     
-    // Load MacOS System Font with antialiasing
+    // Load System Font with antialiasing
     ImFontConfig fontConfig;
     fontConfig.OversampleH = 3; // Improve horizontal antialiasing
     fontConfig.OversampleV = 2; // Improve vertical antialiasing
     fontConfig.PixelSnapH = false; // Allow subpixel rendering
     
+#ifdef __APPLE__
     if (io.Fonts->AddFontFromFileTTF("/System/Library/Fonts/SFNS.ttf", fontSize, &fontConfig)) {
         // Success
     } else if (io.Fonts->AddFontFromFileTTF("/System/Library/Fonts/Helvetica.ttc", fontSize, &fontConfig)) {
@@ -111,6 +160,13 @@ void UmbriferaApp::InitImGui() {
         // Default
         io.Fonts->AddFontDefault(&fontConfig);
     }
+#else
+    if (io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", fontSize, &fontConfig)) {
+        // Success
+    } else {
+        io.Fonts->AddFontDefault(&fontConfig);
+    }
+#endif
     
     // Setup Material-like Style
     ImGuiStyle& style = ImGui::GetStyle();
@@ -194,95 +250,26 @@ void UmbriferaApp::InitImGui() {
     colors[ImGuiCol_NavWindowingDimBg]      = ImVec4(0.80f, 0.80f, 0.80f, 0.20f);
     colors[ImGuiCol_ModalWindowDimBg]       = ImVec4(0.80f, 0.80f, 0.80f, 0.35f);
 
+#ifdef __APPLE__
     ImGui_ImplGlfw_InitForOther(m_Window, true);
-    
     ImGui_ImplMetal_Init(m_Device);
+#else
+    ImGui_ImplGlfw_InitForVulkan(m_Window, true);
+#endif
 }
 
 void UmbriferaApp::InitGraphics() {
-    InitMetal();
+    InitGraphicsBackend();
     // Load Logo
     LoadLogo("assets/logo.png");
     
-    m_RotateCWTexture = LoadAssetTexture("rotate_90_degrees_cw_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png");
-    m_RotateCCWTexture = LoadAssetTexture("rotate_90_degrees_ccw_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png");
-    m_CropTexture = LoadAssetTexture("crop_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png");
-    m_CropRotateTexture = LoadAssetTexture("crop_rotate_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png");
-    m_FitScreenTexture = LoadAssetTexture("fit_screen_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png");
-    m_UndoTexture = LoadAssetTexture("undo_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png");
-    m_CompareTexture = LoadAssetTexture("compare_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png");
-}
-
-id<MTLTexture> UmbriferaApp::LoadAssetTexture(const std::string& filename) {
-    std::string path = "assets/" + filename;
-    NSString* nsPath = [NSString stringWithUTF8String:path.c_str()];
-    NSImage* image = [[NSImage alloc] initWithContentsOfFile:nsPath];
-    
-    if (!image) {
-        // Try from parent directory (running from build folder)
-        path = "../assets/" + filename;
-        nsPath = [NSString stringWithUTF8String:path.c_str()];
-        image = [[NSImage alloc] initWithContentsOfFile:nsPath];
-    }
-    
-    if (!image) {
-        std::cerr << "Failed to load asset: " << filename << std::endl;
-        return nil;
-    }
-    
-    CGImageRef cgImage = [image CGImageForProposedRect:nil context:nil hints:nil];
-    NSUInteger width = CGImageGetWidth(cgImage);
-    NSUInteger height = CGImageGetHeight(cgImage);
-    
-    MTLTextureDescriptor* textureDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:width height:height mipmapped:NO];
-    id<MTLTexture> texture = [m_Device newTextureWithDescriptor:textureDescriptor];
-    
-    NSBitmapImageRep* rep = [[NSBitmapImageRep alloc] initWithCGImage:cgImage];
-    MTLRegion region = MTLRegionMake2D(0, 0, width, height);
-    [texture replaceRegion:region mipmapLevel:0 withBytes:[rep bitmapData] bytesPerRow:[rep bytesPerRow]];
-    
-    return texture;
-}
-
-void UmbriferaApp::LoadLogo(const std::string& path) {
-    NSString* nsPath = [NSString stringWithUTF8String:path.c_str()];
-    NSImage* image = [[NSImage alloc] initWithContentsOfFile:nsPath];
-    if (!image) {
-        // Try absolute path if relative fails (dev environment)
-        NSString* currentDir = [[NSFileManager defaultManager] currentDirectoryPath];
-        NSString* absPath = [currentDir stringByAppendingPathComponent:nsPath];
-        image = [[NSImage alloc] initWithContentsOfFile:absPath];
-    }
-    
-    if (image) {
-        // Convert to CGImage
-        CGImageRef cgImage = [image CGImageForProposedRect:nil context:nil hints:nil];
-        NSUInteger width = CGImageGetWidth(cgImage);
-        NSUInteger height = CGImageGetHeight(cgImage);
-        
-        // Create Metal Texture
-        MTLTextureDescriptor* textureDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:width height:height mipmapped:YES];
-        m_LogoTexture = [m_Device newTextureWithDescriptor:textureDescriptor];
-        
-        // Get raw data
-        NSBitmapImageRep* rep = [[NSBitmapImageRep alloc] initWithCGImage:cgImage];
-        // Ensure RGBA
-        // This might be BGRA or RGBA depending on source.
-        // Let's assume standard RGBA for now or check format.
-        // Actually NSBitmapImageRep bitmapData gives raw bytes.
-        
-        MTLRegion region = MTLRegionMake2D(0, 0, width, height);
-        [m_LogoTexture replaceRegion:region mipmapLevel:0 withBytes:[rep bitmapData] bytesPerRow:[rep bytesPerRow]];
-        
-        // Generate mipmaps for smooth scaling
-        id<MTLCommandBuffer> commandBuffer = [m_CommandQueue commandBuffer];
-        id<MTLBlitCommandEncoder> blitEncoder = [commandBuffer blitCommandEncoder];
-        [blitEncoder generateMipmapsForTexture:m_LogoTexture];
-        [blitEncoder endEncoding];
-        [commandBuffer commit];
-    } else {
-        std::cerr << "Failed to load logo: " << path << std::endl;
-    }
+    m_RotateCWTexture = LoadAssetTexture("assets/rotate_90_degrees_cw_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png");
+    m_RotateCCWTexture = LoadAssetTexture("assets/rotate_90_degrees_ccw_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png");
+    m_CropTexture = LoadAssetTexture("assets/crop_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png");
+    m_CropRotateTexture = LoadAssetTexture("assets/crop_rotate_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png");
+    m_FitScreenTexture = LoadAssetTexture("assets/fit_screen_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png");
+    m_UndoTexture = LoadAssetTexture("assets/undo_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png");
+    m_CompareTexture = LoadAssetTexture("assets/compare_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png");
 }
 
 void UmbriferaApp::Run() {
@@ -293,7 +280,7 @@ void UmbriferaApp::Run() {
 }
 
 void UmbriferaApp::Shutdown() {
-    CleanupMetal();
+    CleanupGraphicsBackend();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
 
@@ -315,9 +302,12 @@ void UmbriferaApp::UpdateUniforms() {
     // Update clipping indicator flag
     m_Uniforms.show_clipping_indicator = m_ShowClippingIndicator ? 1 : 0;
     
+#ifdef __APPLE__
     UpdateMacOSMenu();
+#endif
 }
 
+#ifdef __APPLE__
 #import <Cocoa/Cocoa.h>
 
 // Helper interface to handle menu actions
@@ -331,6 +321,7 @@ void UmbriferaApp::UpdateUniforms() {
 - (void)toggleButtonBarPosition:(id)sender;
  - (void)resetThumbnailsCache:(id)sender;
 @end
+#endif
 
 void UmbriferaApp::OpenExportDialog(const std::string& format) {
     // Prevent opening export dialog if no image is loaded
@@ -717,6 +708,7 @@ Uniforms UmbriferaApp::GetDefaultUniforms() const {
     
     return defaults;
 }
+#ifdef __APPLE__
 @implementation MenuHandler
 - (void)exportJpg:(id)sender {
     if (_app) {
@@ -826,3 +818,4 @@ void UmbriferaApp::SetupMacOSMenu() {
 void UmbriferaApp::UpdateMacOSMenu() {
     // Can update menu state here if needed (e.g. disable items during export)
 }
+#endif

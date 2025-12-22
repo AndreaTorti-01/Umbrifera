@@ -1,0 +1,58 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0) uniform sampler2D srcTexture;
+layout(binding = 1, rgba16) uniform writeonly image2D dstTexture;
+
+layout(push_constant) uniform PushConstants {
+    uint srcWidth;
+    uint srcHeight;
+    uint dstWidth;
+    uint dstHeight;
+} p;
+
+void main() {
+    ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+    if (gid.x >= p.dstWidth || gid.y >= p.dstHeight) return;
+
+    float scaleX = float(p.srcWidth) / float(p.dstWidth);
+    float scaleY = float(p.srcHeight) / float(p.dstHeight);
+
+    float srcX0 = float(gid.x) * scaleX;
+    float srcY0 = float(gid.y) * scaleY;
+    float srcX1 = float(gid.x + 1) * scaleX;
+    float srcY1 = float(gid.y + 1) * scaleY;
+
+    int ix0 = int(floor(srcX0));
+    int iy0 = int(floor(srcY0));
+    int ix1 = int(ceil(srcX1));
+    int iy1 = int(ceil(srcY1));
+
+    vec4 colorSum = vec4(0.0);
+    float weightSum = 0.0;
+
+    for (int sy = iy0; sy < iy1; sy++) {
+        if (sy < 0 || sy >= int(p.srcHeight)) continue;
+        float overlapY0 = max(float(sy), srcY0);
+        float overlapY1 = min(float(sy + 1), srcY1);
+        float wy = overlapY1 - overlapY0;
+
+        for (int sx = ix0; sx < ix1; sx++) {
+            if (sx < 0 || sx >= int(p.srcWidth)) continue;
+            float overlapX0 = max(float(sx), srcX0);
+            float overlapX1 = min(float(sx + 1), srcX1);
+            float wx = overlapX1 - overlapX0;
+
+            float weight = wx * wy;
+            vec4 sampleColor = texelFetch(srcTexture, ivec2(sx, sy), 0);
+            colorSum += sampleColor * weight;
+            weightSum += weight;
+        }
+    }
+
+    if (weightSum > 0.0) {
+        colorSum /= weightSum;
+    }
+
+    imageStore(dstTexture, gid, colorSum);
+}

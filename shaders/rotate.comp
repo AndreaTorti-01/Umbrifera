@@ -1,0 +1,41 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0) uniform sampler2D srcTexture;
+layout(binding = 1, rgba16) uniform writeonly image2D dstTexture;
+
+layout(push_constant) uniform PushConstants {
+    float cosAngle;
+    float sinAngle;
+    float scale;
+    uint srcWidth;
+    uint srcHeight;
+} p;
+
+void main() {
+    ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 dstSize = imageSize(dstTexture);
+    if (gid.x >= dstSize.x || gid.y >= dstSize.y) return;
+
+    float dstCenterX = float(dstSize.x) * 0.5;
+    float dstCenterY = float(dstSize.y) * 0.5;
+    float srcCenterX = float(p.srcWidth) * 0.5;
+    float srcCenterY = float(p.srcHeight) * 0.5;
+
+    float dx = float(gid.x) + 0.5 - dstCenterX;
+    float dy = float(gid.y) + 0.5 - dstCenterY;
+
+    float invScale = 1.0 / p.scale;
+    float rx = (dx * p.cosAngle + dy * p.sinAngle) * invScale;
+    float ry = (-dx * p.sinAngle + dy * p.cosAngle) * invScale;
+
+    float srcX = rx + srcCenterX;
+    float srcY = ry + srcCenterY;
+
+    vec2 uv = vec2(srcX / float(p.srcWidth), srcY / float(p.srcHeight));
+    
+    // Bilinear sampling
+    vec4 color = texture(srcTexture, uv);
+    
+    imageStore(dstTexture, gid, color);
+}

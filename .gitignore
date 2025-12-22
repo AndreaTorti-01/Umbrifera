@@ -26,6 +26,13 @@ Makefile
 
 # Output
 Umbrifera
+error.log
+
+# Dependencies
+vcpkg_installed/
+build/
+bin/
+obj/
 
 # Additional single files
 /image*

@@ -1,12 +1,17 @@
-cmake_minimum_required(VERSION 4.2.0)
+cmake_minimum_required(VERSION 3.20)
 
-# Enable OBJC and OBJCXX for macOS support
-project(Umbrifera LANGUAGES C CXX OBJC OBJCXX)
+project(Umbrifera LANGUAGES C CXX)
+
+if(APPLE)
+    enable_language(OBJC OBJCXX)
+endif()
 
 set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_OBJC_STANDARD 11)
-set(CMAKE_OBJCXX_STANDARD 20)
-set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
+if(APPLE)
+    set(CMAKE_OBJC_STANDARD 11)
+    set(CMAKE_OBJCXX_STANDARD 20)
+    set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
+endif()
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Default to Release build if not specified
@@ -15,8 +20,12 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 # Optimization Flags
-if(CMAKE_BUILD_TYPE STREQUAL "Release")
-    add_compile_options(-O3 -march=native -ffast-math -funroll-loops)
+if(MSVC)
+    add_compile_options(/O2 /fp:fast)
+else()
+    if(CMAKE_BUILD_TYPE STREQUAL "Release")
+        add_compile_options(-O3 -march=native -ffast-math -funroll-loops)
+    endif()
 endif()
 
 include(FetchContent)
@@ -56,14 +65,14 @@ add_library(libraw STATIC ${LIBRAW_SOURCES})
 target_include_directories(libraw PUBLIC ${libraw_SOURCE_DIR})
 target_compile_definitions(libraw PUBLIC LIBRAW_NODLL LIBRAW_NOTHREADS)
 
-# 4. System Libraries (Production Quality Export)
-# Requiring latest stable versions as of Nov 2025
-find_package(JPEG 3.0 REQUIRED) # libjpeg-turbo 3.0.4
-find_package(PNG 1.6.44 REQUIRED) # libpng 1.6.44
-find_package(TIFF 4.7 REQUIRED) # libtiff 4.7.1
+# 4. System Libraries
+find_package(JPEG REQUIRED)
+find_package(PNG REQUIRED)
+find_package(TIFF REQUIRED)
 
-# Copy Shaders.metal to the build directory
-configure_file(shaders/Shaders.metal Shaders.metal COPYONLY)
+if(WIN32)
+    find_package(Vulkan REQUIRED)
+endif()
 
 # ImGui Setup
 set(IMGUI_DIR ${imgui_SOURCE_DIR})
@@ -74,36 +83,57 @@ set(IMGUI_SOURCES
     ${IMGUI_DIR}/imgui_tables.cpp
     ${IMGUI_DIR}/imgui_widgets.cpp
     ${IMGUI_DIR}/backends/imgui_impl_glfw.cpp
-    ${IMGUI_DIR}/backends/imgui_impl_metal.mm
 )
 
-find_library(METAL_LIB Metal)
-find_library(QUARTZCORE_LIB QuartzCore)
-find_library(COCOA_LIB Cocoa)
-find_library(IOKIT_LIB IOKit)
-set(PLATFORM_LIBS ${METAL_LIB} ${QUARTZCORE_LIB} ${COCOA_LIB} ${IOKIT_LIB})
+if(APPLE)
+    list(APPEND IMGUI_SOURCES ${IMGUI_DIR}/backends/imgui_impl_metal.mm)
+    find_library(METAL_LIB Metal)
+    find_library(QUARTZCORE_LIB QuartzCore)
+    find_library(COCOA_LIB Cocoa)
+    find_library(IOKIT_LIB IOKit)
+    set(PLATFORM_LIBS ${METAL_LIB} ${QUARTZCORE_LIB} ${COCOA_LIB} ${IOKIT_LIB})
+elseif(WIN32)
+    list(APPEND IMGUI_SOURCES ${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp)
+    set(PLATFORM_LIBS Vulkan::Vulkan)
+endif()
 
 add_library(imgui STATIC ${IMGUI_SOURCES})
 target_include_directories(imgui PUBLIC ${IMGUI_DIR} ${IMGUI_DIR}/backends)
 
 # Link GLFW to imgui
 target_link_libraries(imgui PUBLIC glfw)
-target_compile_options(imgui PRIVATE -fobjc-arc)
+if(WIN32)
+    target_link_libraries(imgui PUBLIC Vulkan::Vulkan)
+endif()
+if(APPLE)
+    target_compile_options(imgui PRIVATE -fobjc-arc)
+endif()
 
 # Main Executable
-add_executable(Umbrifera 
+set(APP_SOURCES
     src/main.cpp 
-    src/UmbriferaApp.mm
-    src/UmbriferaApp_UI.mm
-    src/UmbriferaApp_Image.mm
-    src/UmbriferaApp_Render_Metal.mm
-    src/FileNavigator.mm
+    src/UmbriferaApp.cpp
+    src/UmbriferaApp_UI.cpp
+    src/UmbriferaApp_Image.cpp
+    src/FileNavigator.cpp
 )
+
+if(APPLE)
+    list(APPEND APP_SOURCES src/UmbriferaApp_Render_Metal.cpp)
+    # Copy Shaders.metal to the build directory
+    configure_file(shaders/Shaders.metal Shaders.metal COPYONLY)
+elseif(WIN32)
+    list(APPEND APP_SOURCES src/UmbriferaApp_Render_Vulkan.cpp)
+endif()
+
+add_executable(Umbrifera ${APP_SOURCES})
 
 target_include_directories(Umbrifera PUBLIC include)
 
-set_source_files_properties(src/main.cpp PROPERTIES LANGUAGE OBJCXX)
-target_compile_options(Umbrifera PRIVATE -fobjc-arc)
+if(APPLE)
+    set_source_files_properties(${APP_SOURCES} PROPERTIES LANGUAGE OBJCXX)
+    target_compile_options(Umbrifera PRIVATE -fobjc-arc)
+endif()
 
 # Link libraries
 target_link_libraries(Umbrifera PRIVATE 
