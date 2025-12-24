@@ -65,6 +65,17 @@ struct Uniforms {
     
     // Clipping Indicator
     int show_clipping_indicator;
+    
+    // HSL System
+    struct HSLGroup {
+        float hue;
+        float hue_shift;
+        float saturation;
+        float luminance;
+        float width;
+        float enabled;
+    } hsl_groups[16];
+    int num_hsl_groups;
 };
 
 // ... (Helpers remain same)
@@ -721,6 +732,45 @@ fragment float4 fragment_main(VertexOut in [[stage_in]],
     ycc.y = chroma.x;
     ycc.z = chroma.y;
     color.rgb = max(ycbcr2rgb(ycc), float3(0.0));
+    
+    // --- 3.5 HSL Adjustments (Selective Color) ---
+    if (uniforms.num_hsl_groups > 0) {
+        float3 hsv = rgb2hsv(color.rgb);
+        float pixelHue = hsv.x;
+        
+        for (int i = 0; i < 16; i++) {
+            if (i >= uniforms.num_hsl_groups) break;
+            if (uniforms.hsl_groups[i].enabled < 0.5) continue;
+            
+            float groupHue = uniforms.hsl_groups[i].hue;
+            float hueDist = abs(pixelHue - groupHue);
+            if (hueDist > 0.5) hueDist = 1.0 - hueDist; // Circular distance
+            
+            // Gaussian weight based on hue distance and width
+            float sigma = uniforms.hsl_groups[i].width;
+            float weight = exp(-(hueDist * hueDist) / (2.0 * sigma * sigma));
+            
+            if (weight > 0.001) {
+                // Apply Hue Shift (using RGB rotation for quality)
+                // Scale hue_shift: 0.1 means ±36 degrees max shift per group
+                if (abs(uniforms.hsl_groups[i].hue_shift) > 0.001) {
+                    color.rgb = mix(color.rgb, rotate_hue_rgb(color.rgb, uniforms.hsl_groups[i].hue_shift * 0.1), weight);
+                }
+                
+                // Apply Saturation and Luminance adjustments
+                // We do this in HSV space for these specific adjustments
+                float3 currentHSV = rgb2hsv(color.rgb);
+                
+                // Saturation: multiplier
+                currentHSV.y *= mix(1.0, uniforms.hsl_groups[i].saturation, weight);
+                
+                // Luminance: multiplier
+                currentHSV.z *= mix(1.0, uniforms.hsl_groups[i].luminance, weight);
+                
+                color.rgb = hsv2rgb(currentHSV);
+            }
+        }
+    }
     
     // Hue Offset (Global)
     // Uses RGB-space rotation to avoid precision loss from color space conversion

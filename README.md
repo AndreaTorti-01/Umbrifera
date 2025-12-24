@@ -19,25 +19,6 @@ Features are ranked by implementation difficulty for AI agents (⭐ = Easy, ⭐�
 #### ⭐⭐ De-Crop Functionality
 When re-entering crop mode via the crop button after a previous crop, allow the user to "undo" or expand back to the original uncropped image boundaries (before any crop was applied).
 
-### Image Processing Adjustments
-
-#### ⭐⭐⭐ Color Grading Wheels
-Add three color grading wheels for Shadows, Midtones, and Highlights. Each wheel allows the user to shift the color balance for that tonal range. Wheels should have:
-- Low sensitivity near the center (fine control)
-- Increasing sensitivity toward edges (bolder adjustments)
-- Visual representation showing the current color shift
-
-#### ⭐⭐⭐⭐ New HSL System with Eyedropper
-Replace the current 15-slice HSL toggle system with a new dynamic approach:
-1. Remove the "Enable HSL Controls" toggle
-2. Add an eyedropper icon button (use `dropper_eye_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png`)
-3. When eyedropper is clicked, user can click on the image to sample a hue
-4. The sampled area should be center-weighted (pixels near click point contribute more)
-5. If the sampled area is colorful enough (saturation above threshold), add a new HSL control group for that hue
-6. Each HSL control group shows: Hue shift, Saturation, Luminance, and Gaussian Width (controls how much neighboring hues are affected)
-7. Each control group has an "X" button (use `close_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png`) to remove it
-8. The eyedropper button moves below the active HSL controls list, allowing adding more
-
 ### Geometric Corrections
 
 #### ⭐⭐⭐⭐ Perspective Controls

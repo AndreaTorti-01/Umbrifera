@@ -56,6 +56,17 @@ ImagoApp::ImagoApp() {
     m_Uniforms.cg_highlights_x = 0.0f;
     m_Uniforms.cg_highlights_y = 0.0f;
     
+    // Initialize HSL System
+    m_Uniforms.num_hsl_groups = 0;
+    for (int i = 0; i < 16; i++) {
+        m_Uniforms.hsl_groups[i].hue = 0.0f;
+        m_Uniforms.hsl_groups[i].hue_shift = 0.0f;
+        m_Uniforms.hsl_groups[i].saturation = 1.0f;
+        m_Uniforms.hsl_groups[i].luminance = 1.0f;
+        m_Uniforms.hsl_groups[i].width = 0.15f;
+        m_Uniforms.hsl_groups[i].enabled = 0.0f;
+    }
+    
     LoadPresets();
     
     m_FileNavigator = std::make_unique<FileNavigator>();
@@ -227,6 +238,8 @@ void ImagoApp::InitGraphics() {
     m_FitScreenTexture = LoadAssetTexture("fit_screen_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png");
     m_UndoTexture = LoadAssetTexture("undo_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png");
     m_CompareTexture = LoadAssetTexture("compare_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png");
+    m_EyedropperTexture = LoadAssetTexture("dropper_eye_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png");
+    m_CloseTexture = LoadAssetTexture("close_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png");
 }
 
 id<MTLTexture> ImagoApp::LoadAssetTexture(const std::string& filename) {
@@ -351,6 +364,17 @@ std::string ImagoApp::SerializeUniforms(const Uniforms& u) {
     ss << "cg_highlights_x=" << u.cg_highlights_x << "\n";
     ss << "cg_highlights_y=" << u.cg_highlights_y << "\n";
     
+    // HSL System
+    ss << "num_hsl_groups=" << u.num_hsl_groups << "\n";
+    for (int i = 0; i < 16; i++) {
+        ss << "hsl_" << i << "_hue=" << u.hsl_groups[i].hue << "\n";
+        ss << "hsl_" << i << "_hue_shift=" << u.hsl_groups[i].hue_shift << "\n";
+        ss << "hsl_" << i << "_saturation=" << u.hsl_groups[i].saturation << "\n";
+        ss << "hsl_" << i << "_luminance=" << u.hsl_groups[i].luminance << "\n";
+        ss << "hsl_" << i << "_width=" << u.hsl_groups[i].width << "\n";
+        ss << "hsl_" << i << "_enabled=" << u.hsl_groups[i].enabled << "\n";
+    }
+    
     return ss.str();
 }
 
@@ -392,6 +416,24 @@ void ImagoApp::DeserializeUniforms(const std::string& data, Uniforms& u) {
             else if (key == "cg_midtones_y") u.cg_midtones_y = std::clamp(std::stof(valStr), -1.0f, 1.0f);
             else if (key == "cg_highlights_x") u.cg_highlights_x = std::clamp(std::stof(valStr), -1.0f, 1.0f);
             else if (key == "cg_highlights_y") u.cg_highlights_y = std::clamp(std::stof(valStr), -1.0f, 1.0f);
+            // HSL System
+            else if (key == "num_hsl_groups") u.num_hsl_groups = std::clamp(std::stoi(valStr), 0, 16);
+            else if (key.find("hsl_") == 0) {
+                size_t firstUnderscore = key.find('_');
+                size_t secondUnderscore = key.find('_', firstUnderscore + 1);
+                if (firstUnderscore != std::string::npos && secondUnderscore != std::string::npos) {
+                    int index = std::stoi(key.substr(firstUnderscore + 1, secondUnderscore - firstUnderscore - 1));
+                    std::string subkey = key.substr(secondUnderscore + 1);
+                    if (index >= 0 && index < 16) {
+                        if (subkey == "hue") u.hsl_groups[index].hue = std::clamp(std::stof(valStr), 0.0f, 1.0f);
+                        else if (subkey == "hue_shift") u.hsl_groups[index].hue_shift = std::clamp(std::stof(valStr), -1.0f, 1.0f);
+                        else if (subkey == "saturation") u.hsl_groups[index].saturation = std::clamp(std::stof(valStr), 0.0f, 2.0f);
+                        else if (subkey == "luminance") u.hsl_groups[index].luminance = std::clamp(std::stof(valStr), 0.0f, 2.0f);
+                        else if (subkey == "width") u.hsl_groups[index].width = std::clamp(std::stof(valStr), 0.01f, 0.5f);
+                        else if (subkey == "enabled") u.hsl_groups[index].enabled = std::stof(valStr);
+                    }
+                }
+            }
         } catch (...) {
             // Ignore parsing errors and keep defaults/current values
         }
@@ -651,6 +693,122 @@ void ImagoApp::CalculateAutoSettings() {
     m_ImageDirty = true;
 }
 
+void ImagoApp::SampleHueAt(float normX, float normY) {
+    if (!m_ProcessedTexture) return;
+    
+    int width = (int)m_ProcessedTexture.width;
+    int height = (int)m_ProcessedTexture.height;
+    
+    // Map normalized coordinates to pixel coordinates
+    int px = (int)(normX * width);
+    int py = (int)(normY * height);
+    
+    // Clamp
+    px = std::clamp(px, 0, width - 1);
+    py = std::clamp(py, 0, height - 1);
+    
+    // Sample a 3x3 window around the point
+    const int radius = 1;
+    float sumR = 0, sumG = 0, sumB = 0, sumCount = 0;
+    
+    int regionX = std::max(0, px - radius);
+    int regionY = std::max(0, py - radius);
+    int regionW = std::min(width - regionX, radius * 2 + 1);
+    int regionH = std::min(height - regionY, radius * 2 + 1);
+    
+    std::vector<uint8_t> pixels(regionW * regionH * 4);
+    MTLRegion region = MTLRegionMake2D(regionX, regionY, regionW, regionH);
+    
+    [m_ProcessedTexture getBytes:pixels.data() bytesPerRow:regionW * 4 fromRegion:region mipmapLevel:0];
+    
+    for (int y = 0; y < regionH; y++) {
+        for (int x = 0; x < regionW; x++) {
+            int idx = (y * regionW + x) * 4;
+            // BGRA8Unorm
+            float b = pixels[idx] / 255.0f;
+            float g = pixels[idx + 1] / 255.0f;
+            float r = pixels[idx + 2] / 255.0f;
+            
+            sumR += r;
+            sumG += g;
+            sumB += b;
+            sumCount += 1.0f;
+        }
+    }
+    
+    if (sumCount > 0) {
+        float r = sumR / sumCount;
+        float g = sumG / sumCount;
+        float b = sumB / sumCount;
+        
+        // Convert to HSV
+        float h, s, v;
+        ImGui::ColorConvertRGBtoHSV(r, g, b, h, s, v);
+        
+        // Check saturation threshold (e.g., 0.05)
+        if (s > 0.05f && m_Uniforms.num_hsl_groups < 16) {
+            int idx = m_Uniforms.num_hsl_groups;
+            m_Uniforms.hsl_groups[idx].hue = h;
+            m_Uniforms.hsl_groups[idx].hue_shift = 0.0f;
+            m_Uniforms.hsl_groups[idx].saturation = 1.0f;
+            m_Uniforms.hsl_groups[idx].luminance = 1.0f;
+            m_Uniforms.hsl_groups[idx].width = 0.15f;
+            m_Uniforms.hsl_groups[idx].enabled = 1.0f;
+            m_Uniforms.num_hsl_groups++;
+            m_ImageDirty = true;
+        }
+    }
+}
+
+ColorSample ImagoApp::SampleColorAt(float normX, float normY) {
+    if (!m_ProcessedTexture) return {0, 0, 0, 1};
+    
+    int width = (int)m_ProcessedTexture.width;
+    int height = (int)m_ProcessedTexture.height;
+    
+    // Map normalized coordinates to pixel coordinates
+    int px = (int)(normX * width);
+    int py = (int)(normY * height);
+    
+    // Clamp
+    px = std::clamp(px, 0, width - 1);
+    py = std::clamp(py, 0, height - 1);
+    
+    // Sample a 3x3 window around the point
+    const int radius = 1;
+    float sumR = 0, sumG = 0, sumB = 0, sumCount = 0;
+    
+    int regionX = std::max(0, px - radius);
+    int regionY = std::max(0, py - radius);
+    int regionW = std::min(width - regionX, radius * 2 + 1);
+    int regionH = std::min(height - regionY, radius * 2 + 1);
+    
+    std::vector<uint8_t> pixels(regionW * regionH * 4);
+    MTLRegion region = MTLRegionMake2D(regionX, regionY, regionW, regionH);
+    
+    [m_ProcessedTexture getBytes:pixels.data() bytesPerRow:regionW * 4 fromRegion:region mipmapLevel:0];
+    
+    for (int y = 0; y < regionH; y++) {
+        for (int x = 0; x < regionW; x++) {
+            int idx = (y * regionW + x) * 4;
+            // BGRA8Unorm
+            float b = pixels[idx] / 255.0f;
+            float g = pixels[idx + 1] / 255.0f;
+            float r = pixels[idx + 2] / 255.0f;
+            
+            sumR += r;
+            sumG += g;
+            sumB += b;
+            sumCount += 1.0f;
+        }
+    }
+    
+    if (sumCount > 0) {
+        return {sumR / sumCount, sumG / sumCount, sumB / sumCount, 1.0f};
+    }
+    return {0, 0, 0, 1};
+}
+
 Uniforms ImagoApp::GetDefaultUniforms() const {
     Uniforms defaults = {};
     
@@ -689,6 +847,17 @@ Uniforms ImagoApp::GetDefaultUniforms() const {
     defaults.cg_midtones_y = 0.0f;
     defaults.cg_highlights_x = 0.0f;
     defaults.cg_highlights_y = 0.0f;
+    
+    // HSL System
+    defaults.num_hsl_groups = 0;
+    for (int i = 0; i < 16; i++) {
+        defaults.hsl_groups[i].hue = 0.0f;
+        defaults.hsl_groups[i].hue_shift = 0.0f;
+        defaults.hsl_groups[i].saturation = 1.0f;
+        defaults.hsl_groups[i].luminance = 1.0f;
+        defaults.hsl_groups[i].width = 0.15f; // Default Gaussian width
+        defaults.hsl_groups[i].enabled = 0.0f;
+    }
     
     return defaults;
 }

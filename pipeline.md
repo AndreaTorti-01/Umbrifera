@@ -114,12 +114,13 @@ Enhances local contrast at different frequency bands using mipmap-based blur app
 *   **Saturation**: Global linear interpolation between Luma (greyscale) and Color.
 
 ### Step 3.5: HSL Adjustments (Selective Color)
-Allows tweaking Hue, Saturation, and Luminance for specific color ranges.
-*   **Color Model**: RGB is converted to HSV for hue selection and saturation/luminance adjustments.
-*   **Slicing**: The Hue circle is divided into 15 slices.
-*   **Weighting**: A Gaussian weight is calculated based on the pixel's hue distance from each slice center.
-*   **Hue Application**: Hue adjustments are applied using **RGB-space rotation** (Rodrigues' formula with axis (1,1,1)) to avoid precision loss from color space conversion.
-*   **Saturation & Luminance**: Applied in HSV space after hue rotation.
+Allows tweaking Hue, Saturation, and Luminance for specific color ranges sampled from the image.
+*   **Dynamic Groups**: Supports up to 16 independent HSL adjustment groups.
+*   **Sampling**: Hues are sampled using an eyedropper tool with center-weighted averaging.
+*   **Weighting**: A Gaussian weight is calculated based on the pixel's hue distance from the group's center hue.
+    *   `weight = exp(-(hueDist²) / (2 * σ²))` where `σ` is the user-adjustable width.
+*   **Hue Application**: Hue adjustments are applied using **RGB-space rotation** (Rodrigues' formula) weighted by the Gaussian factor.
+*   **Saturation & Luminance**: Applied as multipliers in HSV space, weighted by the Gaussian factor.
 
 ### Step 3.6: Hue Offset
 Global rotation of the hue wheel.

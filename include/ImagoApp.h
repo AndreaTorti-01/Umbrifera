@@ -16,10 +16,23 @@
 
 struct GLFWwindow;
 
+struct ColorSample {
+    float r, g, b, a;
+};
+
 struct UndoState {
     std::vector<uint16_t> textureData; // 16-bit RGBA pixel data
     int width;
     int height;
+};
+
+struct HSLGroup {
+    float hue;           // Center hue [0, 1]
+    float hue_shift;     // Shift [-1, 1]
+    float saturation;    // Multiplier [0, 2]
+    float luminance;     // Multiplier [0, 2]
+    float width;         // Gaussian width [0.01, 0.5]
+    float enabled;       // 1.0 if active, 0.0 otherwise
 };
 
 struct Uniforms {
@@ -61,6 +74,10 @@ struct Uniforms {
     
     // Clipping Indicator
     int show_clipping_indicator; // 0 or 1
+    
+    // HSL System
+    HSLGroup hsl_groups[16];
+    int num_hsl_groups;
 };
 
 class ImagoApp {
@@ -101,6 +118,8 @@ private:
     void SetupLayout();
     void ComputeHistogram();
     void CalculateAutoSettings(); // New: Auto Adjust
+    void SampleHueAt(float normX, float normY); // New: HSL Eyedropper
+    ColorSample SampleColorAt(float normX, float normY); // Sample color (sRGB, 0-1 range)
     Uniforms GetDefaultUniforms() const; // Get default uniform values
 
     // Platform specific helpers
@@ -244,9 +263,14 @@ private:
     id<MTLTexture> m_FitScreenTexture = nil;
     id<MTLTexture> m_UndoTexture = nil;
     id<MTLTexture> m_CompareTexture = nil;
+    id<MTLTexture> m_EyedropperTexture = nil;
+    id<MTLTexture> m_CloseTexture = nil;
     
     // Comparison Mode (show original image while button held)
     bool m_CompareMode = false;
+    
+    // Eyedropper Mode
+    bool m_EyedropperMode = false;
     
     // Clipping Indicator (toggled via histogram click)
     bool m_ShowClippingIndicator = false;

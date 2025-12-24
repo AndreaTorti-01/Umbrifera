@@ -767,6 +767,66 @@ void ImagoApp::RenderUI() {
             uv_tl, uv_tr, uv_br, uv_bl
         );
         
+        // Eyedropper Mode Interaction
+        if (m_EyedropperMode && !m_CropMode) {
+            if (isHovered) {
+                ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            }
+            
+            if (isHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                ImVec2 mousePos = ImGui::GetIO().MousePos;
+                if (mousePos.x >= p_min.x && mousePos.x <= p_max.x &&
+                    mousePos.y >= p_min.y && mousePos.y <= p_max.y) {
+                    
+                    // Map screen coordinates to normalized image coordinates
+                    float normX = (mousePos.x - p_min.x) / dispW;
+                    float normY = (mousePos.y - p_min.y) / dispH;
+                    
+                    // Sample hue
+                    SampleHueAt(normX, normY);
+                    
+                    // Exit eyedropper mode after sampling
+                    m_EyedropperMode = false;
+                }
+            }
+            
+            // Show color preview next to cursor while hovering over image
+            if (isHovered) {
+                ImVec2 mousePos = ImGui::GetIO().MousePos;
+                if (mousePos.x >= p_min.x && mousePos.x <= p_max.x &&
+                    mousePos.y >= p_min.y && mousePos.y <= p_max.y) {
+                    
+                    // Map screen coordinates to normalized image coordinates
+                    float normX = (mousePos.x - p_min.x) / dispW;
+                    float normY = (mousePos.y - p_min.y) / dispH;
+                    
+                    // Sample color at cursor position
+                    ColorSample sampledColor = SampleColorAt(normX, normY);
+                    
+                    // Convert to HSV to extract hue
+                    float h, s, v;
+                    ImGui::ColorConvertRGBtoHSV(sampledColor.r, sampledColor.g, sampledColor.b, h, s, v);
+                    
+                    // Create pure hue color (S=1, V=1)
+                    float pureR, pureG, pureB;
+                    ImGui::ColorConvertHSVtoRGB(h, 1.0f, 1.0f, pureR, pureG, pureB);
+                    
+                    ImDrawList* drawList = ImGui::GetWindowDrawList();
+                    
+                    // Draw a small preview circle next to cursor (offset 20px right, 10px down)
+                    ImVec2 previewPos = ImVec2(mousePos.x + 20.0f, mousePos.y + 10.0f);
+                    float previewRadius = 10.0f;
+                    
+                    // Convert pure hue to ImU32
+                    ImU32 previewColor = ImGui::GetColorU32(ImVec4(pureR, pureG, pureB, 1.0f));
+                    
+                    // Draw filled circle with border
+                    drawList->AddCircleFilled(previewPos, previewRadius, previewColor);
+                    drawList->AddCircle(previewPos, previewRadius, IM_COL32(255, 255, 255, 255), 0, 2.0f);
+                }
+            }
+        }
+        
         // Crop Mode Overlay
         if (m_CropMode) {
             ImGuiIO& io = ImGui::GetIO();
@@ -1272,7 +1332,7 @@ void ImagoApp::RenderUI() {
         }
         
         // Pan (only when not in crop mode or rotating, and not dragging crop elements)
-        if (!m_CropMode && !m_ArbitraryRotateDragging && isActive && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+        if (!m_CropMode && !m_ArbitraryRotateDragging && !m_EyedropperMode && isActive && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
             ImVec2 delta = io.MouseDelta;
             m_ViewOffset[0] += delta.x / dispW;
             m_ViewOffset[1] += delta.y / dispH;
@@ -1946,7 +2006,70 @@ void ImagoApp::RenderUI() {
     
     ImGui::EndGroup();
     
+    // --- HSL Adjustments (Selective Color) ---
     UI_GapSmall();
+    UI_Header("HSL Adjustments");
+    UI_GapSmall();
+    
+    for (int i = 0; i < m_Uniforms.num_hsl_groups; i++) {
+        if (m_Uniforms.hsl_groups[i].enabled < 0.5f) continue;
+        
+        ImGui::PushID(i);
+        
+        // Color indicator and Remove button
+        float r, g, b;
+        ImGui::ColorConvertHSVtoRGB(m_Uniforms.hsl_groups[i].hue, 1.0f, 1.0f, r, g, b);
+        ImGui::ColorButton("##HueColor", ImVec4(r, g, b, 1.0f), ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoDragDrop);
+        ImGui::SameLine();
+        
+        // Display hex code
+        uint32_t hexColor = ((uint32_t)(r * 255) << 16) | ((uint32_t)(g * 255) << 8) | ((uint32_t)(b * 255));
+        ImGui::Text("#%06X", hexColor);
+        ImGui::SameLine();
+        
+        if (m_CloseTexture) {
+            if (ImGui::ImageButton("##RemoveHSL", (ImTextureID)m_CloseTexture, ImVec2(16, 16))) {
+                // Remove by shifting others
+                for (int j = i; j < m_Uniforms.num_hsl_groups - 1; j++) {
+                    m_Uniforms.hsl_groups[j] = m_Uniforms.hsl_groups[j+1];
+                }
+                m_Uniforms.num_hsl_groups--;
+                changed = true;
+            }
+        } else {
+            if (ImGui::Button("X")) {
+                for (int j = i; j < m_Uniforms.num_hsl_groups - 1; j++) {
+                    m_Uniforms.hsl_groups[j] = m_Uniforms.hsl_groups[j+1];
+                }
+                m_Uniforms.num_hsl_groups--;
+                changed = true;
+            }
+        }
+        
+        if (m_Uniforms.num_hsl_groups > i) { // Check if still exists
+            if (UIHelpers::SliderWithReset("Hue Shift", &m_Uniforms.hsl_groups[i].hue_shift, -1.0f, 1.0f, 0.0f)) changed = true;
+            if (UIHelpers::SliderWithReset("Saturation", &m_Uniforms.hsl_groups[i].saturation, 0.0f, 2.0f, 1.0f)) changed = true;
+            if (UIHelpers::SliderWithReset("Luminance", &m_Uniforms.hsl_groups[i].luminance, 0.0f, 2.0f, 1.0f)) changed = true;
+            if (UIHelpers::SliderWithReset("Width", &m_Uniforms.hsl_groups[i].width, 0.01f, 0.5f, 0.15f)) changed = true;
+            UI_GapSmall();
+        }
+        
+        ImGui::PopID();
+    }
+    
+    // Eyedropper button
+    if (m_EyedropperTexture) {
+        ImVec4 tint = m_EyedropperMode ? ImVec4(1, 1, 0, 1) : ImVec4(1, 1, 1, 1);
+        if (ImGui::ImageButton("##Eyedropper", (ImTextureID)m_EyedropperTexture, ImVec2(24, 24), ImVec2(0,0), ImVec2(1,1), ImVec4(0,0,0,0), tint)) {
+            m_EyedropperMode = !m_EyedropperMode;
+        }
+    } else {
+        if (ImGui::Checkbox("Eyedropper", &m_EyedropperMode)) {}
+    }
+    ImGui::SameLine();
+    ImGui::Text("Add HSL Control");
+    
+    UI_GapLarge();
     
     // Hue Offset (Global) - moved here from Light & Color section
     if (UIHelpers::SliderWithResetNonLinear("Hue Offset", &m_Uniforms.hue_offset, -1.0f, 1.0f, 0.0f, 2.0f)) changed = true;
