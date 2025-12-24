@@ -55,14 +55,16 @@ struct Uniforms {
     float blacks_scale;
     float whites_scale;
     
-    // HSL Adjustments
-    int hsl_enabled;
-    float4 hsl_adjustments[15]; // x=Hue, y=Sat, z=Lum
+    // Color Grading (Shadows, Midtones, Highlights)
+    float cg_shadows_x;
+    float cg_shadows_y;
+    float cg_midtones_x;
+    float cg_midtones_y;
+    float cg_highlights_x;
+    float cg_highlights_y;
     
     // Clipping Indicator
     int show_clipping_indicator;
-    
-    float padding[2];
 };
 
 // ... (Helpers remain same)
@@ -103,6 +105,39 @@ float3 hsv2rgb(float3 c) {
     float4 K = float4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
     float3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
     return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+// Forward declarations (helpers are defined later in the file)
+float3 rgb2ycbcr(float3 c);
+float3 ycbcr2rgb(float3 c);
+
+// Helper: Convert wheel offsets to a chroma shift in YCbCr.
+// - Mouse mapping stays linear (x/y stored as-is)
+// - Strength uses a curve on radius to be less sensitive near center
+static inline float2 get_wheel_chroma_delta(float x, float y) {
+    float dist = sqrt(x*x + y*y);
+    dist = clamp(dist, 0.0, 1.0);
+
+    // Less sensitive near center, gradually stronger toward edges
+    float strength = pow(dist, 2.2);
+    // Slight top-end reduction to avoid overly strong rim tints
+    strength = strength * (1.0 - 0.25 * strength);
+    strength = clamp(strength, 0.0, 1.0);
+    if (strength < 1e-4) return float2(0.0);
+
+    // Map angle to hue
+    float hue = atan2(y, x) / (2.0 * 3.14159265);
+    if (hue < 0.0) hue += 1.0;
+
+    // Hue direction in chroma space
+    float3 hueRGB = hsv2rgb(float3(hue, 1.0, 1.0));
+    float3 hueYCC = rgb2ycbcr(hueRGB);
+    float2 dir = float2(hueYCC.y, hueYCC.z);
+    float dirLen = max(length(dir), 1e-5);
+    dir /= dirLen;
+
+    const float kChromaScale = 0.18;
+    return dir * (strength * kChromaScale);
 }
 
 // Helper: RGB Hue Rotation using rotation matrix
@@ -649,73 +684,43 @@ fragment float4 fragment_main(VertexOut in [[stage_in]],
     luma = dot(color.rgb, float3(0.2126, 0.7152, 0.0722));
     color.rgb = mix(float3(luma), color.rgb, uniforms.saturation);
     
-    // HSL Adjustments (Selective Color)
-    if (uniforms.hsl_enabled != 0) {
-        float3 hsv = rgb2hsv(color.rgb);
-        float hue = hsv.x; // 0.0 to 1.0
-        float sat = hsv.y;
-        float val = hsv.z;
-        
-        float4 total_adj = float4(0.0);
-        float total_weight = 0.0;
-        
-        // Iterate over all 15 slices
-        for (int i = 0; i < 15; i++) {
-            float slice_hue = float(i) / 15.0;
-            
-            // 1. Hue Distance (Circular)
-            float distH = abs(hue - slice_hue);
-            if (distH > 0.5) distH = 1.0 - distH;
-            
-            // 2. Saturation Distance (Target: 1.0)
-            // Falloff as saturation decreases
-            float distS = 1.0 - sat;
-            
-            // 3. Value/Luminance Distance (Target: 1.0)
-            // Falloff as value decreases (darker pixels)
-            float distV = 1.0 - val;
-            
-            // Combined Gaussian Weight
-            // Sigma H: Controls hue width (overlap)
-            // Sigma S: Controls saturation falloff (how much it affects low sat)
-            // Sigma V: Controls luminance falloff (how much it affects darks)
-            
-            float sigmaH = 0.028;
-            float saturation_threshold = 0.2;
-            float saturation_min = 0.0;
-            
-            float wH = gaussian_weight(distH, sigmaH);
-            float wS = smoothstep(saturation_min, saturation_threshold, sat);
-            float wV = 1.0;
-            
-            // Combined weight
-            float w = wH * wS * wV;
-            
-            total_adj += uniforms.hsl_adjustments[i] * w;
-            total_weight += w;
-            
-        }
-        
-        if (total_weight > 0.001) {
-            float4 adj = total_adj / total_weight;
-            
-            // Apply Hue Shift using RGB rotation (avoids precision loss)
-            if (abs(adj.x) > 0.001) {
-                color.rgb = rotate_hue_rgb(color.rgb, adj.x);
-            }
-            
-            // Recalculate HSV after hue rotation
-            hsv = rgb2hsv(color.rgb);
-            
-            // Apply Saturation Shift
-            hsv.y = saturate(hsv.y + adj.y);
-            
-            // Apply Luminance Shift
-            hsv.z = max(0.0, hsv.z + adj.z);
-            
-            color.rgb = hsv2rgb(hsv);
-        }
-    }
+    // Color Grading (Shadows, Midtones, Highlights)
+    // Applies color tints to different luminance zones while preserving luminance
+    
+    // Apply tints by shifting chroma in YCbCr while keeping Y unchanged.
+    // This is more stable than additive RGB offsets and better preserves luminance.
+    float3 ycc = rgb2ycbcr(color.rgb);
+    float y = ycc.x;
+
+    // Perceptual luminance for smooth tonal masks
+    float percLuma = pow(saturate(y), 1.0/2.2);
+
+    // Broad, smooth masks with overlap (more Lightroom-like blending)
+    float shadowWeight = 1.0 - smoothstep(0.25, 0.60, percLuma);
+    float highlightWeight = smoothstep(0.40, 0.85, percLuma);
+    float midtoneWeight = 1.0 - smoothstep(0.0, 1.0, abs(percLuma - 0.5) * 2.0);
+    midtoneWeight = pow(saturate(midtoneWeight), 1.15);
+
+    // Normalize weights
+    float totalWeight = shadowWeight + midtoneWeight + highlightWeight + 1e-6;
+    shadowWeight /= totalWeight;
+    midtoneWeight /= totalWeight;
+    highlightWeight /= totalWeight;
+
+    float2 dS = get_wheel_chroma_delta(uniforms.cg_shadows_x, uniforms.cg_shadows_y);
+    float2 dM = get_wheel_chroma_delta(uniforms.cg_midtones_x, uniforms.cg_midtones_y);
+    float2 dH = get_wheel_chroma_delta(uniforms.cg_highlights_x, uniforms.cg_highlights_y);
+
+    float2 chroma = ycc.yz;
+    chroma += dS * shadowWeight + dM * midtoneWeight + dH * highlightWeight;
+
+    // Clamp chroma to reduce out-of-gamut artifacts
+    chroma = clamp(chroma, float2(-0.5), float2(0.5));
+
+    ycc.x = y;
+    ycc.y = chroma.x;
+    ycc.z = chroma.y;
+    color.rgb = max(ycbcr2rgb(ycc), float3(0.0));
     
     // Hue Offset (Global)
     // Uses RGB-space rotation to avoid precision loss from color space conversion
@@ -738,7 +743,8 @@ fragment float4 fragment_main(VertexOut in [[stage_in]],
     luma = dot(color.rgb, float3(0.2126, 0.7152, 0.0722));
     
     // Convert to perceptual space (approximate gamma 2.2)
-    float percLuma = pow(saturate(luma), 1.0/2.2);
+    // Re-use percLuma from earlier to avoid redefinition
+    percLuma = pow(saturate(luma), 1.0/2.2);
     
     float invTwoSigmaSq = 24.85; // 1 / (2 * 0.142²)
     
@@ -824,16 +830,16 @@ fragment float4 fragment_main(VertexOut in [[stage_in]],
         // === Exposure-weighted grain response (computed at render time) ===
         // This allows adjustments to exposure/contrast to affect grain visibility
         float grainLuma = dot(color.rgb, float3(0.2126, 0.7152, 0.0722));
-        float percLuma = pow(saturate(grainLuma), 1.0/2.2);
+        float grainPercLuma = pow(saturate(grainLuma), 1.0/2.2);
         
         // Shadow boost increases with amount (higher ISO = grainier shadows)
         float shadowBoost = mix(1.0, 1.8, uniforms.grain_amount);
         // Grain response curve: strong in shadows, falls off in highlights
-        float grainResponse = pow(1.0 - percLuma, 1.5) * shadowBoost;
+        float grainResponse = pow(1.0 - grainPercLuma, 1.5) * shadowBoost;
         // Add baseline so midtones still have some grain
-        grainResponse = mix(0.3, grainResponse, smoothstep(0.0, 0.5, 1.0 - percLuma));
+        grainResponse = mix(0.3, grainResponse, smoothstep(0.0, 0.5, 1.0 - grainPercLuma));
         // Reduce grain in pure highlights
-        grainResponse *= smoothstep(1.0, 0.85, percLuma);
+        grainResponse *= smoothstep(1.0, 0.85, grainPercLuma);
         
         // === Layer weighting based on amount ===
         float wA = mix(0.15, 0.35, uniforms.grain_amount);

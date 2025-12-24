@@ -48,8 +48,13 @@ ImagoApp::ImagoApp() {
     m_Uniforms.blacks_scale = 0.1f;
     m_Uniforms.whites_scale = 0.2f;
     
-    m_Uniforms.hsl_enabled = 0;
-    for(int i=0; i<15; ++i) m_Uniforms.hsl_adjustments[i] = {0.0f, 0.0f, 0.0f, 0.0f};
+    // Initialize Color Grading Wheels
+    m_Uniforms.cg_shadows_x = 0.0f;
+    m_Uniforms.cg_shadows_y = 0.0f;
+    m_Uniforms.cg_midtones_x = 0.0f;
+    m_Uniforms.cg_midtones_y = 0.0f;
+    m_Uniforms.cg_highlights_x = 0.0f;
+    m_Uniforms.cg_highlights_y = 0.0f;
     
     LoadPresets();
     
@@ -337,11 +342,14 @@ std::string ImagoApp::SerializeUniforms(const Uniforms& u) {
     ss << "denoise_chroma=" << u.denoise_chroma << "\n";
     ss << "sharpen_intensity=" << u.sharpen_intensity << "\n";
     ss << "base_exposure=" << u.base_exposure << "\n";
-    ss << "hsl_enabled=" << u.hsl_enabled << "\n";
     
-    for (int i = 0; i < 15; i++) {
-        ss << "hsl_" << i << "=" << u.hsl_adjustments[i].x << "," << u.hsl_adjustments[i].y << "," << u.hsl_adjustments[i].z << "\n";
-    }
+    // Color Grading Wheels
+    ss << "cg_shadows_x=" << u.cg_shadows_x << "\n";
+    ss << "cg_shadows_y=" << u.cg_shadows_y << "\n";
+    ss << "cg_midtones_x=" << u.cg_midtones_x << "\n";
+    ss << "cg_midtones_y=" << u.cg_midtones_y << "\n";
+    ss << "cg_highlights_x=" << u.cg_highlights_x << "\n";
+    ss << "cg_highlights_y=" << u.cg_highlights_y << "\n";
     
     return ss.str();
 }
@@ -377,20 +385,13 @@ void ImagoApp::DeserializeUniforms(const std::string& data, Uniforms& u) {
             else if (key == "denoise_chroma") u.denoise_chroma = std::clamp(std::stof(valStr), 0.0f, 1.0f);
             else if (key == "sharpen_intensity") u.sharpen_intensity = std::clamp(std::stof(valStr), 0.0f, 1.0f);
             else if (key == "base_exposure") u.base_exposure = std::stof(valStr);
-            else if (key == "hsl_enabled") u.hsl_enabled = std::clamp(std::stoi(valStr), 0, 1);
-            else if (key.rfind("hsl_", 0) == 0) {
-                // Parse hsl_N=x,y,z
-                int index = std::stoi(key.substr(4));
-                if (index >= 0 && index < 15) {
-                    size_t c1 = valStr.find(',');
-                    size_t c2 = valStr.find(',', c1 + 1);
-                    if (c1 != std::string::npos && c2 != std::string::npos) {
-                        u.hsl_adjustments[index].x = std::clamp(std::stof(valStr.substr(0, c1)), -0.1f, 0.1f); // Hue is small range
-                        u.hsl_adjustments[index].y = std::clamp(std::stof(valStr.substr(c1 + 1, c2 - c1 - 1)), -1.0f, 1.0f);
-                        u.hsl_adjustments[index].z = std::clamp(std::stof(valStr.substr(c2 + 1)), -1.0f, 1.0f);
-                    }
-                }
-            }
+            // Color Grading Wheels
+            else if (key == "cg_shadows_x") u.cg_shadows_x = std::clamp(std::stof(valStr), -1.0f, 1.0f);
+            else if (key == "cg_shadows_y") u.cg_shadows_y = std::clamp(std::stof(valStr), -1.0f, 1.0f);
+            else if (key == "cg_midtones_x") u.cg_midtones_x = std::clamp(std::stof(valStr), -1.0f, 1.0f);
+            else if (key == "cg_midtones_y") u.cg_midtones_y = std::clamp(std::stof(valStr), -1.0f, 1.0f);
+            else if (key == "cg_highlights_x") u.cg_highlights_x = std::clamp(std::stof(valStr), -1.0f, 1.0f);
+            else if (key == "cg_highlights_y") u.cg_highlights_y = std::clamp(std::stof(valStr), -1.0f, 1.0f);
         } catch (...) {
             // Ignore parsing errors and keep defaults/current values
         }
@@ -680,10 +681,14 @@ Uniforms ImagoApp::GetDefaultUniforms() const {
     defaults.contrast_pivot = 0.18f;
     defaults.blacks_scale = 0.1f;
     defaults.whites_scale = 0.2f;
-    defaults.hsl_enabled = 0;
-    for (int i = 0; i < 15; i++) {
-        defaults.hsl_adjustments[i] = {0.0f, 0.0f, 0.0f, 0.0f};
-    }
+    
+    // Color Grading Wheels (all centered by default)
+    defaults.cg_shadows_x = 0.0f;
+    defaults.cg_shadows_y = 0.0f;
+    defaults.cg_midtones_x = 0.0f;
+    defaults.cg_midtones_y = 0.0f;
+    defaults.cg_highlights_x = 0.0f;
+    defaults.cg_highlights_y = 0.0f;
     
     return defaults;
 }

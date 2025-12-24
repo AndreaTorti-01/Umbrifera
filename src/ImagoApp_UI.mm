@@ -1800,7 +1800,155 @@ void ImagoApp::RenderUI() {
     if (SliderWithReset("Vibrance", &m_Uniforms.vibrance, -1.0f, 1.0f, 0.0f)) changed = true;
     if (SliderWithReset("Saturation", &m_Uniforms.saturation, 0.0f, 2.0f, 1.0f)) changed = true;
     
-    // Hue Offset with non-linear sensitivity (scale=2.0 maps slider range to +/-0.5 hue)
+    UI_Separator();
+    
+    // Color Grading
+    UI_Header("Color Grading");
+    
+    // Helper lambda for drawing a color wheel
+    auto DrawColorWheel = [&](const char* label, float* offset_x, float* offset_y, const char* display_label) -> bool {
+        bool valueChanged = false;
+        
+        ImDrawList* draw_list = ImGui::GetWindowDrawList();
+        ImVec2 cursor_pos = ImGui::GetCursorPos();
+        ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
+        
+        float wheel_radius = 35.0f;  // Smaller wheel
+        float canvas_size = wheel_radius * 2.0f + 10.0f;
+        
+        ImVec2 center = ImVec2(canvas_pos.x + canvas_size * 0.5f, canvas_pos.y + canvas_size * 0.5f);
+        
+        // Draw wheel background (smooth radial gradient)
+        const int segments = 64;
+        ImVec2 uv = ImGui::GetIO().Fonts->TexUvWhitePixel;
+        for (int i = 0; i < segments; i++) {
+            float angle1 = (float)i / segments * 2.0f * M_PI;
+            float angle2 = (float)(i + 1) / segments * 2.0f * M_PI;
+            
+            // Screen Y grows downward; flip so the wheel matches Cartesian (UP is positive)
+            ImVec2 p1 = ImVec2(center.x + cosf(angle1) * wheel_radius, center.y - sinf(angle1) * wheel_radius);
+            ImVec2 p2 = ImVec2(center.x + cosf(angle2) * wheel_radius, center.y - sinf(angle2) * wheel_radius);
+            
+            float r1, g1, b1;
+            ImGui::ColorConvertHSVtoRGB((float)i / segments, 1.0f, 1.0f, r1, g1, b1);
+            ImU32 col1 = ImGui::ColorConvertFloat4ToU32(ImVec4(r1, g1, b1, 1.0f));
+            
+            float r2, g2, b2;
+            ImGui::ColorConvertHSVtoRGB((float)(i + 1) / segments, 1.0f, 1.0f, r2, g2, b2);
+            ImU32 col2 = ImGui::ColorConvertFloat4ToU32(ImVec4(r2, g2, b2, 1.0f));
+            
+            // Center is white for desaturation towards center
+            ImU32 colCenter = IM_COL32(255, 255, 255, 255);
+            
+            draw_list->PrimReserve(3, 3);
+            draw_list->PrimWriteIdx((ImDrawIdx)(draw_list->_VtxCurrentIdx));
+            draw_list->PrimWriteIdx((ImDrawIdx)(draw_list->_VtxCurrentIdx + 1));
+            draw_list->PrimWriteIdx((ImDrawIdx)(draw_list->_VtxCurrentIdx + 2));
+            draw_list->PrimWriteVtx(center, uv, colCenter);
+            draw_list->PrimWriteVtx(p1, uv, col1);
+            draw_list->PrimWriteVtx(p2, uv, col2);
+        }
+        
+        // Draw border
+        draw_list->AddCircle(center, wheel_radius, IM_COL32(150, 150, 150, 255), 0, 1.5f);
+        
+        // Calculate current position from offsets
+        // Note: Y is inverted for standard Cartesian (UP is positive)
+        float current_x = *offset_x * wheel_radius;
+        float current_y = -(*offset_y) * wheel_radius; 
+        ImVec2 handle_pos = ImVec2(center.x + current_x, center.y + current_y);
+        
+        // Draw handle (small circle with shadow)
+        draw_list->AddCircleFilled(handle_pos, 4.0f, IM_COL32(0, 0, 0, 100));
+        draw_list->AddCircle(handle_pos, 3.5f, IM_COL32(255, 255, 255, 255), 0, 1.5f);
+        
+        // Invisible button for interaction
+        // Use normal layout cursor (avoids ImGui warning about extending parent boundaries)
+        ImGui::SetCursorPos(cursor_pos);
+        ImGui::InvisibleButton(label, ImVec2(canvas_size, canvas_size));
+        
+        bool hovered = ImGui::IsItemHovered();
+        bool active = ImGui::IsItemActive();
+        
+        if (active) {
+            ImVec2 mouse_pos = ImGui::GetIO().MousePos;
+            float dx = mouse_pos.x - center.x;
+            float dy = mouse_pos.y - center.y;
+            
+            // Linear movement: handle follows mouse exactly
+            *offset_x = dx / wheel_radius;
+            *offset_y = -dy / wheel_radius; // Invert Y for Cartesian
+            
+            // Clamp to circle
+            float len = sqrtf((*offset_x) * (*offset_x) + (*offset_y) * (*offset_y));
+            if (len > 1.0f) {
+                *offset_x /= len;
+                *offset_y /= len;
+            }
+            
+            valueChanged = true;
+        }
+        
+        // Draw hover effect
+        if (hovered) {
+            draw_list->AddCircle(center, wheel_radius + 2, IM_COL32(200, 200, 200, 255), 0, 1.0f);
+        }
+
+        // Draw reset button label below wheel, centered (in local coordinates)
+        ImVec2 label_size = ImGui::CalcTextSize(display_label);
+        float button_w = label_size.x + 10.0f;
+        float button_h = label_size.y + 6.0f;
+        float start_x = ImGui::GetCursorPosX();
+        ImGui::SetCursorPosX(start_x + (canvas_size - button_w) * 0.5f);
+        if (ImGui::Button(display_label, ImVec2(button_w, button_h))) {
+            *offset_x = 0.0f;
+            *offset_y = 0.0f;
+            valueChanged = true;
+        }
+
+        // Ensure this widget owns its full vertical space (wheel + label)
+        ImGui::Dummy(ImVec2(0.0f, 2.0f));
+        
+        return valueChanged;
+    };
+    
+    // Three wheels in a row
+    ImGui::BeginGroup();
+    
+    // Shadows
+    ImGui::BeginGroup();
+    if (DrawColorWheel("##ShadowsWheel", &m_Uniforms.cg_shadows_x, &m_Uniforms.cg_shadows_y, "Shadows")) {
+        changed = true;
+    }
+    ImGui::EndGroup();
+    
+    ImGui::SameLine();
+    ImGui::Spacing();
+    ImGui::SameLine();
+    
+    // Midtones
+    ImGui::BeginGroup();
+    if (DrawColorWheel("##MidtonesWheel", &m_Uniforms.cg_midtones_x, &m_Uniforms.cg_midtones_y, "Midtones")) {
+        changed = true;
+    }
+    ImGui::EndGroup();
+    
+    ImGui::SameLine();
+    ImGui::Spacing();
+    ImGui::SameLine();
+    
+    // Highlights
+    ImGui::BeginGroup();
+    if (DrawColorWheel("##HighlightsWheel", &m_Uniforms.cg_highlights_x, &m_Uniforms.cg_highlights_y, "Highlights")) {
+        changed = true;
+    }
+    ImGui::EndGroup();
+    
+    ImGui::EndGroup();
+    
+    UI_GapSmall();
+    
+    // Hue Offset (Global) - moved here from Light & Color section
     if (UIHelpers::SliderWithResetNonLinear("Hue Offset", &m_Uniforms.hue_offset, -1.0f, 1.0f, 0.0f, 2.0f)) changed = true;
     
     UI_Separator();
@@ -1810,78 +1958,6 @@ void ImagoApp::RenderUI() {
     if (SliderWithReset("Luma Denoise", &m_Uniforms.denoise_luma, 0.0f, 1.0f, 0.0f)) changed = true;
     if (SliderWithReset("Chroma Denoise", &m_Uniforms.denoise_chroma, 0.0f, 1.0f, 0.0f)) changed = true;
     if (SliderWithReset("Sharpening", &m_Uniforms.sharpen_intensity, 0.0f, 1.0f, 0.0f)) changed = true;
-    
-    UI_Separator();
-    
-    // HSL Adjustments
-    bool hsl_active = m_Uniforms.hsl_enabled != 0;
-    if (ImGui::Checkbox("Enable HSL Controls", &hsl_active)) {
-        m_Uniforms.hsl_enabled = hsl_active ? 1 : 0;
-        changed = true;
-    }
-    
-    if (hsl_active) {
-        UI_GapSmall();
-        
-        // Colors for headers (approximate)
-        ImVec4 headerColors[15] = {
-            ImVec4(1.0f, 0.0f, 0.0f, 1.0f), // Red
-            ImVec4(1.0f, 0.25f, 0.0f, 1.0f),
-            ImVec4(1.0f, 0.5f, 0.0f, 1.0f),
-            ImVec4(1.0f, 0.75f, 0.0f, 1.0f),
-            ImVec4(1.0f, 1.0f, 0.0f, 1.0f), // Yellow
-            ImVec4(0.5f, 1.0f, 0.0f, 1.0f),
-            ImVec4(0.0f, 1.0f, 0.0f, 1.0f), // Green
-            ImVec4(0.0f, 1.0f, 0.5f, 1.0f),
-            ImVec4(0.0f, 1.0f, 1.0f, 1.0f), // Cyan
-            ImVec4(0.0f, 0.5f, 1.0f, 1.0f),
-            ImVec4(0.0f, 0.0f, 1.0f, 1.0f), // Blue
-            ImVec4(0.5f, 0.0f, 1.0f, 1.0f),
-            ImVec4(0.75f, 0.0f, 1.0f, 1.0f),
-            ImVec4(1.0f, 0.0f, 1.0f, 1.0f), // Magenta
-            ImVec4(1.0f, 0.0f, 0.5f, 1.0f)
-        };
-        
-        for (int i = 0; i < 15; i++) {
-            ImGui::PushID(i);
-            
-            // Tint the reset buttons
-            ImVec4 baseColor = headerColors[i];
-            ImVec4 buttonColor = ImVec4(baseColor.x, baseColor.y, baseColor.z, 0.3f);
-            ImVec4 buttonHover = ImVec4(baseColor.x, baseColor.y, baseColor.z, 0.5f);
-            ImVec4 buttonActive = ImVec4(baseColor.x, baseColor.y, baseColor.z, 0.7f);
-            
-            ImGui::PushStyleColor(ImGuiCol_Button, buttonColor);
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, buttonHover);
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, buttonActive);
-            
-            // Hue (Non-linear, scale=10.0 maps slider to +/-0.1)
-            float hVal = m_Uniforms.hsl_adjustments[i].x;
-            if (UIHelpers::SliderWithResetNonLinear("Hue", &hVal, -1.0f, 1.0f, 0.0f, 10.0f)) {
-                m_Uniforms.hsl_adjustments[i].x = hVal;
-                changed = true;
-            }
-            
-            // Saturation (Non-linear, scale=1.0)
-            float sVal = m_Uniforms.hsl_adjustments[i].y;
-            if (UIHelpers::SliderWithResetNonLinear("Saturation", &sVal, -1.0f, 1.0f, 0.0f, 1.0f)) {
-                m_Uniforms.hsl_adjustments[i].y = sVal;
-                changed = true;
-            }
-            
-            // Luminance (Non-linear, scale=1.0)
-            float lVal = m_Uniforms.hsl_adjustments[i].z;
-            if (UIHelpers::SliderWithResetNonLinear("Luminance", &lVal, -1.0f, 1.0f, 0.0f, 1.0f)) {
-                m_Uniforms.hsl_adjustments[i].z = lVal;
-                changed = true;
-            }
-            
-            ImGui::PopStyleColor(3);
-            ImGui::PopID();
-            
-            UI_GapSmall();
-        }
-    }
     
     UI_Separator();
     
@@ -1901,7 +1977,6 @@ void ImagoApp::RenderUI() {
     UI_Header("Film Grain");
     ImGui::PushID("GrainControls");
     if (SliderWithReset("Amount", &m_Uniforms.grain_amount, 0.0f, 1.0f, 0.0f)) changed = true;
-    // Size slider removed as requested
     ImGui::PopID();
     
     // Save Preset Dialog

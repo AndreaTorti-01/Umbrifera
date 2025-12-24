@@ -50,23 +50,17 @@ struct Uniforms {
     float blacks_scale;
     float whites_scale;
     
-    // HSL Adjustments
-    int hsl_enabled; // 0 or 1
-    // 15 colors * 3 params (Hue, Sat, Lum) = 45 floats
-    // We can pack them into arrays.
-    // Metal arrays in structs need careful alignment.
-    // float hsl_hue[15];
-    // float hsl_sat[15];
-    // float hsl_lum[15];
-    // Metal arrays are aligned to 16 bytes (float4).
-    // It's safer to use a fixed size array of float4 where x=h, y=s, z=l, w=unused.
-    // 15 * 16 bytes = 240 bytes.
-    vector_float4 hsl_adjustments[15]; 
+    // Color Grading (Shadows, Midtones, Highlights)
+    // Each is a 2D offset from the wheel center: x = horizontal tint, y = vertical tint
+    float cg_shadows_x;     // Shadows tint X (horizontal)
+    float cg_shadows_y;     // Shadows tint Y (vertical)
+    float cg_midtones_x;    // Midtones tint X
+    float cg_midtones_y;    // Midtones tint Y
+    float cg_highlights_x;  // Highlights tint X
+    float cg_highlights_y;  // Highlights tint Y
     
     // Clipping Indicator
     int show_clipping_indicator; // 0 or 1
-    
-    float padding[2]; // Alignment
 };
 
 class ImagoApp {
