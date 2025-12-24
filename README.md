@@ -1,6 +1,6 @@
-# Umbrifera
+# Imago
 
-Umbrifera is a high-performance Raw Image Processor for macOS, built with C++20, Metal, and ImGui. It features a 16-bit linear floating-point pipeline for professional-grade color grading.
+Imago is a high-performance Raw Image Processor for macOS, built with C++20, Metal, and ImGui. It features a 16-bit linear floating-point pipeline for professional-grade color grading.
 
 ## Features
 
@@ -114,7 +114,7 @@ Replace the current LibRaw DHT demosaicing with a neural network-based Joint Dem
 ### Cloning
 
 ```bash
-git clone https://github.com/yourusername/Umbrifera.git
+git clone https://github.com/yourusername/Imago.git
 ```
 
 ## Dependencies

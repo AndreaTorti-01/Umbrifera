@@ -1,7 +1,7 @@
-# Umbrifera Project - Instructions for AI Agents
+# Imago Project - Instructions for AI Agents
 
 ## Project Overview
-Umbrifera is a professional RAW image processing application built with Metal (macOS), ImGui, LibRaw, and GLFW. It features real-time GPU-accelerated image processing with a comprehensive set of adjustment tools.
+Imago is a professional RAW image processing application built with Metal (macOS), ImGui, LibRaw, and GLFW. It features real-time GPU-accelerated image processing with a comprehensive set of adjustment tools.
 
 ## Feature Implementation Guidelines
 
@@ -18,12 +18,12 @@ This ensures all implementations match the user's exact expectations and prevent
 ## Architecture
 
 ### Core Components
-- **Main Application** (`UmbriferaApp.h/.mm`): Central app logic, state management, initialization
-- **UI Rendering** (`UmbriferaApp_UI.mm`): ImGui-based interface with docking (~2000 lines handling all panels)
-- **Image Loading & Export** (`UmbriferaApp_Image.mm`): LibRaw integration, async image loading, EXIF extraction, image export
-- **GPU Image Processing** (`UmbriferaApp_Image_GPU.mm`): ProcessImage, grain generation, histogram computation on GPU
-- **Texture Operations** (`UmbriferaApp_TextureOps.mm`): Crop, rotation, and undo texture manipulation operations
-- **Metal Rendering** (`UmbriferaApp_Render_Metal.mm`): GPU pipeline initialization, frame rendering, texture setup
+- **Main Application** (`ImagoApp.h/.mm`): Central app logic, state management, initialization
+- **UI Rendering** (`ImagoApp_UI.mm`): ImGui-based interface with docking (~2000 lines handling all panels)
+- **Image Loading & Export** (`ImagoApp_Image.mm`): LibRaw integration, async image loading, EXIF extraction, image export
+- **GPU Image Processing** (`ImagoApp_Image_GPU.mm`): ProcessImage, grain generation, histogram computation on GPU
+- **Texture Operations** (`ImagoApp_TextureOps.mm`): Crop, rotation, and undo texture manipulation operations
+- **Metal Rendering** (`ImagoApp_Render_Metal.mm`): GPU pipeline initialization, frame rendering, texture setup
 - **Shaders** (`shaders/Shaders.metal`): Metal shader code (~1000 lines) for all image processing
 - **File Navigator** (`FileNavigator.h/.mm`): Thumbnail browser for RAW files with async loading
 - **UI Config** (`include/UIConfig.h`): Centralized UI constants (spacing, sizes, colors)
@@ -31,20 +31,20 @@ This ensures all implementations match the user's exact expectations and prevent
 
 ### File Structure
 ```
-Umbrifera/
+Imago/
 ├── include/           # Header files
-│   ├── UmbriferaApp.h     # Main app class with all state
+│   ├── ImagoApp.h     # Main app class with all state
 │   ├── FileNavigator.h    # File browser component
 │   ├── UIConfig.h         # UI constants
 │   └── UIHelpers.h        # UI helper functions
 ├── src/               # Implementation files
 │   ├── main.cpp                           # Entry point
-│   ├── UmbriferaApp.mm                   # Init, run loop, presets, menu handlers
-│   ├── UmbriferaApp_UI.mm                # All UI rendering (~2000 lines)
-│   ├── UmbriferaApp_Image.mm             # Image loading, export, EXIF
-│   ├── UmbriferaApp_Image_GPU.mm         # GPU image processing and histogram
-│   ├── UmbriferaApp_Texture Ops.mm       # Crop, rotate, undo operations
-│   ├── UmbriferaApp_Render_Metal.mm      # Metal pipeline setup and frame rendering
+│   ├── ImagoApp.mm                   # Init, run loop, presets, menu handlers
+│   ├── ImagoApp_UI.mm                # All UI rendering (~2000 lines)
+│   ├── ImagoApp_Image.mm             # Image loading, export, EXIF
+│   ├── ImagoApp_Image_GPU.mm         # GPU image processing and histogram
+│   ├── ImagoApp_Texture Ops.mm       # Crop, rotate, undo operations
+│   ├── ImagoApp_Render_Metal.mm      # Metal pipeline setup and frame rendering
 │   └── FileNavigator.mm                  # File browser implementation
 ├── shaders/
 │   └── Shaders.metal      # Metal shader code (vertex, fragment, compute kernels)
@@ -55,7 +55,7 @@ Umbrifera/
 ```
 
 ### State Management
-All application state is in `UmbriferaApp` class:
+All application state is in `ImagoApp` class:
 - **Image State**: `m_RawTexture`, `m_ProcessedTexture`, `m_GrainTexture`
 - **View State**: `m_ViewZoom`, `m_ViewOffset`, `m_RotationAngle`
 - **Edit State**: `m_Uniforms` (all adjustment parameters)
@@ -75,15 +75,15 @@ All application state is in `UmbriferaApp` class:
 - **macOS Application Bundle**: Proper `.app` bundle structure for distribution
 - CMake-based with `MACOSX_BUNDLE` target
 - `./build.sh` - Build and sign the application bundle
-- `./run.sh` - Launch `Umbrifera.app` (uses `open` command)
+- `./run.sh` - Launch `Imago.app` (uses `open` command)
 - Dependencies auto-downloaded: GLFW, ImGui (docking branch), LibRaw
 - **Bundle Structure**:
   ```
-  build/Umbrifera.app/
+  build/Imago.app/
   └── Contents/
       ├── Info.plist              # Bundle metadata
       ├── MacOS/
-      │   └── Umbrifera           # Main executable
+      │   └── Imago           # Main executable
       ├── Resources/
       │   ├── Shaders.metal       # Metal shader source
       │   └── assets/             # PNG icons
@@ -126,7 +126,7 @@ When you need a new visual constant, **add it to UIConfig.h** rather than embedd
 When you create a new UI pattern that appears more than once, **add it to UIHelpers.h**.
 
 ### Standardized Components (Legacy Aliases)
-For backward compatibility, `UmbriferaApp_UI.mm` provides local aliases:
+For backward compatibility, `ImagoApp_UI.mm` provides local aliases:
 - `UI_GAP_SMALL` → `UIConfig::GAP_SMALL`
 - `UI_GAP_LARGE` → `UIConfig::GAP_LARGE`
 - `UI_BUTTON_HEIGHT` → `UIConfig::BUTTON_HEIGHT`
@@ -200,7 +200,7 @@ Single-pass fragment shader applies (in order):
 
 ### EXIF Metadata
 - Extracted from LibRaw: Camera, ISO, Shutter, Aperture, Focal Length, Date/Time
-- Displayed in **application window title** (via `glfwSetWindowTitle`): `Umbrifera | Camera Info | Date/Time`
+- Displayed in **application window title** (via `glfwSetWindowTitle`): `Imago | Camera Info | Date/Time`
 - **No GPS data** (removed per user request)
 - Date format: `YYYY-MM-DD HH:MM:SS`
 
@@ -306,11 +306,11 @@ Icons should be PNG format, located in `assets/`:
 ### File Organization  
 - **Split large files** when they exceed ~400 lines and mix distinct concerns
 - Each file should have a single, clear responsibility:
-  - `UmbriferaApp_Render_Metal.mm` - Metal pipeline initialization and frame rendering
-  - `UmbriferaApp_Image_GPU.mm` - GPU image processing (ProcessImage, grain, histogram)
-  - `UmbriferaApp_TextureOps.mm` - Texture manipulation (crop, rotate, undo)
-  - `UmbriferaApp_Image.mm` - File I/O and CPU-side image operations
-  - `UmbriferaApp_UI.mm` - All UI rendering (currently ~2000 lines; candidates for further splits: dialogs, image viewer, develop panel)
+  - `ImagoApp_Render_Metal.mm` - Metal pipeline initialization and frame rendering
+  - `ImagoApp_Image_GPU.mm` - GPU image processing (ProcessImage, grain, histogram)
+  - `ImagoApp_TextureOps.mm` - Texture manipulation (crop, rotate, undo)
+  - `ImagoApp_Image.mm` - File I/O and CPU-side image operations
+  - `ImagoApp_UI.mm` - All UI rendering (currently ~2000 lines; candidates for further splits: dialogs, image viewer, develop panel)
 
 ### Code Patterns
 - **Never keep commented-out code** - delete completely; use git history if needed
@@ -321,10 +321,10 @@ Icons should be PNG format, located in `assets/`:
 
 ### Recent Cleanup (Dec 2025)
 - Removed logo loading feature (~40 lines)
-- Split `UmbriferaApp_Render_Metal.mm` into:
-  - ProcessImage, grain generation → `UmbriferaApp_Image_GPU.mm`
-  - Crop, rotate, undo operations → `UmbriferaApp_TextureOps.mm`
-  - Main rendering pipeline → stays in `UmbriferaApp_Render_Metal.mm`
+- Split `ImagoApp_Render_Metal.mm` into:
+  - ProcessImage, grain generation → `ImagoApp_Image_GPU.mm`
+  - Crop, rotate, undo operations → `ImagoApp_TextureOps.mm`
+  - Main rendering pipeline → stays in `ImagoApp_Render_Metal.mm`
 - Removed ~40 useless comments (obvious statements, redundant explanations)
 - **Converted to proper macOS .app bundle**:
   - Created `Info.plist` with bundle metadata

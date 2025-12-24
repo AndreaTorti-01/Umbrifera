@@ -1,4 +1,4 @@
-#include "UmbriferaApp.h"
+#include "ImagoApp.h"
 #include "libraw_gpl3.h"
 #include <iostream>
 #include <fstream>
@@ -16,7 +16,7 @@ static void amaze_callback(void* ctx) {
     lr->amaze_demosaic_RT();
 }
 
-void UmbriferaApp::LoadRawImage(const std::string& path) {
+void ImagoApp::LoadRawImage(const std::string& path) {
     // If we are already loading an image, don't start another load.
     if (m_IsLoading) return;
     m_IsLoading = true;
@@ -255,7 +255,7 @@ void UmbriferaApp::LoadRawImage(const std::string& path) {
 #include <png.h>
 #include <tiffio.h>
 
-void UmbriferaApp::SaveImageAsync(const std::string& filename, const std::string& format) {
+void ImagoApp::SaveImageAsync(const std::string& filename, const std::string& format) {
     if (!m_ProcessedTexture) {
         std::cerr << "No image to save!" << std::endl;
         return;
@@ -486,6 +486,6 @@ void UmbriferaApp::SaveImageAsync(const std::string& filename, const std::string
     m_ExportThread.detach();
 }
 
-void UmbriferaApp::SaveImage(const std::string& filename, const std::string& format) {
+void ImagoApp::SaveImage(const std::string& filename, const std::string& format) {
     SaveImageAsync(filename, format);
 }

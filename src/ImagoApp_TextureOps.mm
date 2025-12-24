@@ -1,8 +1,8 @@
-#include "UmbriferaApp.h"
+#include "ImagoApp.h"
 #include <Metal/Metal.h>
 #include <cmath>
 
-void UmbriferaApp::HandlePendingCrop() {
+void ImagoApp::HandlePendingCrop() {
     if (!m_CropPending || !m_RawTexture || !m_Device || !m_CommandQueue) return;
     m_CropPending = false;
     
@@ -100,7 +100,7 @@ void UmbriferaApp::HandlePendingCrop() {
     }
 }
 
-void UmbriferaApp::HandlePendingRotation() {
+void ImagoApp::HandlePendingRotation() {
     if (!m_RotatePending || !m_RawTexture || !m_Device || !m_CommandQueue || !m_RotatePSO) return;
     m_RotatePending = false;
     

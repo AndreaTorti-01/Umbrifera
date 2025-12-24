@@ -1,6 +1,6 @@
 # Image Processing Pipeline
 
-This document details the complete image processing pipeline of Umbrifera, from raw file loading to final display.
+This document details the complete image processing pipeline of Imago, from raw file loading to final display.
 
 ## 1. Raw Loading (CPU - LibRaw)
 

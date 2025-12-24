@@ -1,8 +1,8 @@
-#include "UmbriferaApp.h"
+#include "ImagoApp.h"
 
 int main(int, char**)
 {
-    UmbriferaApp app;
+    ImagoApp app;
     if (app.Init()) {
         app.Run();
     }

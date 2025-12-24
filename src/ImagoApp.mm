@@ -1,4 +1,4 @@
-#include "UmbriferaApp.h"
+#include "ImagoApp.h"
 #include "imgui.h"
 #include "imgui_internal.h" // For DockBuilder API
 #include "imgui_impl_glfw.h"
@@ -17,7 +17,7 @@ static void glfw_error_callback(int error, const char* description)
     fprintf(stderr, "Glfw Error %d: %s\n", error, description);
 }
 
-UmbriferaApp::UmbriferaApp() {
+ImagoApp::ImagoApp() {
     // Initialize uniforms to defaults
     // Each slider default appears here, making it easy to update centrally
     m_Uniforms = {0};
@@ -56,11 +56,11 @@ UmbriferaApp::UmbriferaApp() {
     m_FileNavigator = std::make_unique<FileNavigator>();
 }
 
-UmbriferaApp::~UmbriferaApp() {
+ImagoApp::~ImagoApp() {
     Shutdown();
 }
 
-bool UmbriferaApp::Init() {
+bool ImagoApp::Init() {
     glfwSetErrorCallback(glfw_error_callback);
     if (!glfwInit())
         return false;
@@ -74,16 +74,16 @@ bool UmbriferaApp::Init() {
     return true;
 }
 
-void UmbriferaApp::InitWindow() {
+void ImagoApp::InitWindow() {
     // We don't want an OpenGL context, so we say NO_API
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_MAXIMIZED, GLFW_TRUE);
-    m_Window = glfwCreateWindow(1280, 720, "Umbrifera", nullptr, nullptr);
+    m_Window = glfwCreateWindow(1280, 720, "Imago", nullptr, nullptr);
     
     SetupMacOSMenu();
 }
 
-void UmbriferaApp::InitImGui() {
+void ImagoApp::InitImGui() {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO(); (void)io;
@@ -212,7 +212,7 @@ void UmbriferaApp::InitImGui() {
     ImGui_ImplMetal_Init(m_Device);
 }
 
-void UmbriferaApp::InitGraphics() {
+void ImagoApp::InitGraphics() {
     InitMetal();
     
     m_RotateCWTexture = LoadAssetTexture("rotate_90_degrees_cw_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png");
@@ -224,7 +224,7 @@ void UmbriferaApp::InitGraphics() {
     m_CompareTexture = LoadAssetTexture("compare_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png");
 }
 
-id<MTLTexture> UmbriferaApp::LoadAssetTexture(const std::string& filename) {
+id<MTLTexture> ImagoApp::LoadAssetTexture(const std::string& filename) {
     // Load from bundle Resources/assets
     NSBundle* bundle = [NSBundle mainBundle];
     NSString* fileNameNS = [NSString stringWithUTF8String:filename.c_str()];
@@ -257,14 +257,14 @@ id<MTLTexture> UmbriferaApp::LoadAssetTexture(const std::string& filename) {
     return texture;
 }
 
-void UmbriferaApp::Run() {
+void ImagoApp::Run() {
     while (!glfwWindowShouldClose(m_Window)) {
         glfwPollEvents();
         RenderFrame();
     }
 }
 
-void UmbriferaApp::Shutdown() {
+void ImagoApp::Shutdown() {
     CleanupMetal();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
@@ -276,7 +276,7 @@ void UmbriferaApp::Shutdown() {
     glfwTerminate();
 }
 
-void UmbriferaApp::UpdateUniforms() {
+void ImagoApp::UpdateUniforms() {
     // Track grain_size changes to trigger regeneration
     static float lastGrainSize = -1.0f;
     if (lastGrainSize != m_Uniforms.grain_size) {
@@ -292,7 +292,7 @@ void UmbriferaApp::UpdateUniforms() {
 
 // Helper interface to handle menu actions
 @interface MenuHandler : NSObject
-@property (nonatomic, assign) UmbriferaApp* app;
+@property (nonatomic, assign) ImagoApp* app;
 - (void)exportJpg:(id)sender;
 - (void)exportPng:(id)sender;
 - (void)exportTiff:(id)sender;
@@ -302,7 +302,7 @@ void UmbriferaApp::UpdateUniforms() {
  - (void)resetThumbnailsCache:(id)sender;
 @end
 
-void UmbriferaApp::OpenExportDialog(const std::string& format) {
+void ImagoApp::OpenExportDialog(const std::string& format) {
     // Prevent opening export dialog if no image is loaded
     if (!m_ProcessedTexture) {
         return;
@@ -315,7 +315,7 @@ void UmbriferaApp::OpenExportDialog(const std::string& format) {
 
 // --- Serialization ---
 
-std::string UmbriferaApp::SerializeUniforms(const Uniforms& u) {
+std::string ImagoApp::SerializeUniforms(const Uniforms& u) {
     std::stringstream ss;
     ss << "exposure=" << u.exposure << "\n";
     ss << "contrast=" << u.contrast << "\n";
@@ -346,7 +346,7 @@ std::string UmbriferaApp::SerializeUniforms(const Uniforms& u) {
     return ss.str();
 }
 
-void UmbriferaApp::DeserializeUniforms(const std::string& data, Uniforms& u) {
+void ImagoApp::DeserializeUniforms(const std::string& data, Uniforms& u) {
     std::stringstream ss(data);
     std::string line;
     while (std::getline(ss, line)) {
@@ -397,7 +397,7 @@ void UmbriferaApp::DeserializeUniforms(const std::string& data, Uniforms& u) {
     }
 }
 
-void UmbriferaApp::SaveSidecar() {
+void ImagoApp::SaveSidecar() {
     if (m_LoadedImagePath.empty()) return;
     
     std::string sidecarPath = m_LoadedImagePath + ".xmp";
@@ -408,7 +408,7 @@ void UmbriferaApp::SaveSidecar() {
     }
 }
 
-void UmbriferaApp::LoadSidecar() {
+void ImagoApp::LoadSidecar() {
     if (m_LoadedImagePath.empty()) return;
     
     std::string sidecarPath = m_LoadedImagePath + ".xmp";
@@ -430,7 +430,7 @@ void UmbriferaApp::LoadSidecar() {
     }
 }
 
-void UmbriferaApp::ResetThumbnailsCache() {
+void ImagoApp::ResetThumbnailsCache() {
     if (m_FileNavigator) {
         m_FileNavigator->ClearThumbnailCache();
     }
@@ -438,7 +438,7 @@ void UmbriferaApp::ResetThumbnailsCache() {
 
 // --- Presets ---
 
-void UmbriferaApp::LoadPresets() {
+void ImagoApp::LoadPresets() {
     m_Presets.clear();
     
     // Auto Preset (Special - calls CalculateAutoSettings)
@@ -478,7 +478,7 @@ void UmbriferaApp::LoadPresets() {
     }
 }
 
-void UmbriferaApp::SavePresets() {
+void ImagoApp::SavePresets() {
     std::ofstream out("presets.txt");
     if (out.is_open()) {
         // Skip default preset (index 0)
@@ -490,7 +490,7 @@ void UmbriferaApp::SavePresets() {
     }
 }
 
-void UmbriferaApp::ApplyPreset(const Preset& preset) {
+void ImagoApp::ApplyPreset(const Preset& preset) {
     // Preserve base exposure and constants as they should never change
     float currentBaseExposure = m_Uniforms.base_exposure;
     float currentContrastPivot = m_Uniforms.contrast_pivot;
@@ -505,7 +505,7 @@ void UmbriferaApp::ApplyPreset(const Preset& preset) {
     m_Uniforms.whites_scale = currentWhitesScale;
 }
 
-void UmbriferaApp::CalculateAutoSettings() {
+void ImagoApp::CalculateAutoSettings() {
     if (m_RawHistogram.empty()) return;
     
     // Get default Uniforms for resetting
@@ -650,7 +650,7 @@ void UmbriferaApp::CalculateAutoSettings() {
     m_ImageDirty = true;
 }
 
-Uniforms UmbriferaApp::GetDefaultUniforms() const {
+Uniforms ImagoApp::GetDefaultUniforms() const {
     Uniforms defaults = {};
     
     // Slider defaults (these appear in the UI and are user-editable)
@@ -732,7 +732,7 @@ Uniforms UmbriferaApp::GetDefaultUniforms() const {
 
 static MenuHandler* g_MenuHandler = nil;
 
-void UmbriferaApp::SetupMacOSMenu() {
+void ImagoApp::SetupMacOSMenu() {
     if (g_MenuHandler == nil) {
         g_MenuHandler = [[MenuHandler alloc] init];
         g_MenuHandler.app = this;
@@ -741,14 +741,14 @@ void UmbriferaApp::SetupMacOSMenu() {
     NSMenu* mainMenu = [[NSMenu alloc] initWithTitle:@"MainMenu"];
     [NSApp setMainMenu:mainMenu];
 
-    // 1. App Menu (Umbrifera)
-    NSMenuItem* appMenuItem = [mainMenu addItemWithTitle:@"Umbrifera" action:nil keyEquivalent:@""];
-    NSMenu* appMenu = [[NSMenu alloc] initWithTitle:@"Umbrifera"];
+    // 1. App Menu (Imago)
+    NSMenuItem* appMenuItem = [mainMenu addItemWithTitle:@"Imago" action:nil keyEquivalent:@""];
+    NSMenu* appMenu = [[NSMenu alloc] initWithTitle:@"Imago"];
     [appMenuItem setSubmenu:appMenu];
 
-    [appMenu addItemWithTitle:@"About Umbrifera" action:@selector(orderFrontStandardAboutPanel:) keyEquivalent:@""];
+    [appMenu addItemWithTitle:@"About Imago" action:@selector(orderFrontStandardAboutPanel:) keyEquivalent:@""];
     [appMenu addItem:[NSMenuItem separatorItem]];
-    [appMenu addItemWithTitle:@"Quit Umbrifera" action:@selector(terminate:) keyEquivalent:@"q"];
+    [appMenu addItemWithTitle:@"Quit Imago" action:@selector(terminate:) keyEquivalent:@"q"];
 
     // 2. Export Menu (Top Level)
     NSMenuItem* exportMenuItem = [mainMenu addItemWithTitle:@"Export" action:nil keyEquivalent:@""];
@@ -793,6 +793,6 @@ void UmbriferaApp::SetupMacOSMenu() {
     [resetThumbs setTarget:g_MenuHandler];
 }
 
-void UmbriferaApp::UpdateMacOSMenu() {
+void ImagoApp::UpdateMacOSMenu() {
     // Can update menu state here if needed (e.g. disable items during export)
 }

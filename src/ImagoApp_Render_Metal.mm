@@ -1,4 +1,4 @@
-#include "UmbriferaApp.h"
+#include "ImagoApp.h"
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 
@@ -10,7 +10,7 @@
 #include <iostream>
 #include <cmath>
 
-void UmbriferaApp::InitMetal() {
+void ImagoApp::InitMetal() {
     // 1. Create the Metal Device (GPU interface)
     m_Device = MTLCreateSystemDefaultDevice();
     m_CommandQueue = [m_Device newCommandQueue];
@@ -104,11 +104,11 @@ void UmbriferaApp::InitMetal() {
     }
 }
 
-void UmbriferaApp::CleanupMetal() {
+void ImagoApp::CleanupMetal() {
     ImGui_ImplMetal_Shutdown();
 }
 
-void UmbriferaApp::RenderFrame() {
+void ImagoApp::RenderFrame() {
     @autoreleasepool {
         // 1. Check if a new image has been loaded in the background thread
         if (m_TextureUploadPending) {

@@ -1,9 +1,9 @@
-#include "UmbriferaApp.h"
+#include "ImagoApp.h"
 #include <Metal/Metal.h>
 #include <iostream>
 #include <cmath>
 
-void UmbriferaApp::ProcessImage() {
+void ImagoApp::ProcessImage() {
     if (!m_RawTexture || !m_ProcessedTexture) return;
 
     id<MTLCommandBuffer> cb = [m_CommandQueue commandBuffer];
@@ -122,7 +122,7 @@ void UmbriferaApp::ProcessImage() {
     [cb commit];
 }
 
-void UmbriferaApp::PushUndoState() {
+void ImagoApp::PushUndoState() {
     if (!m_RawTexture) return;
     
     NSUInteger width = m_RawTexture.width;
@@ -143,7 +143,7 @@ void UmbriferaApp::PushUndoState() {
     m_UndoStack.push_back(std::move(state));
 }
 
-void UmbriferaApp::Undo() {
+void ImagoApp::Undo() {
     if (m_UndoStack.empty() || !m_Device || !m_CommandQueue) return;
     
     UndoState state = std::move(m_UndoStack.back());

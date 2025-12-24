@@ -1,4 +1,4 @@
-#include "UmbriferaApp.h"
+#include "ImagoApp.h"
 #include "UIConfig.h"
 #include "UIHelpers.h"
 #include "imgui.h"
@@ -15,14 +15,14 @@ static void UI_Header(const char* text) { UIHelpers::Header(text); }
 static void UI_GapSmall() { UIHelpers::GapSmall(); }
 static void UI_GapLarge() { UIHelpers::GapLarge(); }
 
-void UmbriferaApp::SetupLayout() {
+void ImagoApp::SetupLayout() {
     if (m_FirstLayout) {
         ImGui::SetNextWindowSize(ImVec2(300, 600), ImGuiCond_FirstUseEver);
         m_FirstLayout = false;
     }
 }
 
-void UmbriferaApp::OpenResizeDialog() {
+void ImagoApp::OpenResizeDialog() {
     if (!m_ProcessedTexture) return;
     
     m_ShowResizeDialog = true;
@@ -30,7 +30,7 @@ void UmbriferaApp::OpenResizeDialog() {
     m_ResizeTargetHeight = (int)m_RawTexture.height;
 }
 
-void UmbriferaApp::RenderUI() {
+void ImagoApp::RenderUI() {
     ImGuiIO& io = ImGui::GetIO();
     
     bool modKey = io.KeySuper || io.KeyCtrl;
@@ -627,7 +627,7 @@ void UmbriferaApp::RenderUI() {
     
     // Update application window title with EXIF data
     if (!m_ExifString.empty() || !m_ExifString2.empty()) {
-        std::string windowTitle = "Umbrifera";
+        std::string windowTitle = "Imago";
         if (!m_ExifString.empty()) {
             windowTitle += " | " + m_ExifString;
         }
@@ -1483,7 +1483,7 @@ void UmbriferaApp::RenderUI() {
         center.x += windowSize.x * 0.5f;
         center.y += windowSize.y * 0.5f;
         
-        const char* text1 = "Welcome to Umbrifera";
+        const char* text1 = "Welcome to Imago";
         const char* text2 = "Use the File Navigator on the left to open a RAW image.";
         const char* text3 = "Right-click a folder to set it as the root directory.";
         const char* text4 = "Use the top menu to Export your work.";

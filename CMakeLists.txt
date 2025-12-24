@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 4.2.0)
 
 # Enable OBJC and OBJCXX for macOS support
-project(Umbrifera LANGUAGES C CXX OBJC OBJCXX)
+project(Imago LANGUAGES C CXX OBJC OBJCXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_OBJC_STANDARD 11)
@@ -101,33 +101,39 @@ target_link_libraries(imgui PUBLIC glfw)
 target_compile_options(imgui PRIVATE -fobjc-arc)
 
 # Main Executable - Build as macOS bundle
-add_executable(Umbrifera MACOSX_BUNDLE
+add_executable(Imago MACOSX_BUNDLE
     src/main.cpp 
-    src/UmbriferaApp.mm
-    src/UmbriferaApp_UI.mm
-    src/UmbriferaApp_Image.mm
-    src/UmbriferaApp_Render_Metal.mm
-    src/UmbriferaApp_Image_GPU.mm
-    src/UmbriferaApp_TextureOps.mm
+    src/ImagoApp.mm
+    src/ImagoApp_UI.mm
+    src/ImagoApp_Image.mm
+    src/ImagoApp_Render_Metal.mm
+    src/ImagoApp_Image_GPU.mm
+    src/ImagoApp_TextureOps.mm
     src/FileNavigator.mm
 )
 
-target_include_directories(Umbrifera PUBLIC include)
+target_include_directories(Imago PUBLIC include)
 
 set_source_files_properties(src/main.cpp PROPERTIES LANGUAGE OBJCXX)
-target_compile_options(Umbrifera PRIVATE -fobjc-arc)
+target_compile_options(Imago PRIVATE -fobjc-arc)
 
 # Set bundle properties
-set_target_properties(Umbrifera PROPERTIES
+set_target_properties(Imago PROPERTIES
     MACOSX_BUNDLE_INFO_PLIST ${CMAKE_SOURCE_DIR}/Info.plist
-    MACOSX_BUNDLE_BUNDLE_NAME "Umbrifera"
-    MACOSX_BUNDLE_GUI_IDENTIFIER "com.umbrifera.app"
+    MACOSX_BUNDLE_BUNDLE_NAME "Imago"
+    MACOSX_BUNDLE_GUI_IDENTIFIER "com.imago.app"
     MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0"
     MACOSX_BUNDLE_BUNDLE_VERSION "1.0.0"
+    MACOSX_BUNDLE_ICON_FILE "Imago.icns"
 )
 
 # Copy shaders to Resources
 set_source_files_properties(shaders/Shaders.metal PROPERTIES
+    MACOSX_PACKAGE_LOCATION Resources
+)
+
+# Copy icon to Resources
+set_source_files_properties(assets/Imago.icns PROPERTIES
     MACOSX_PACKAGE_LOCATION Resources
 )
 
@@ -138,13 +144,14 @@ set_source_files_properties(${ASSETS_PNG} PROPERTIES
 )
 
 # Add resources to target
-target_sources(Umbrifera PRIVATE
+target_sources(Imago PRIVATE
     shaders/Shaders.metal
+    assets/Imago.icns
     ${ASSETS_PNG}
 )
 
 # Link libraries
-target_link_libraries(Umbrifera PRIVATE 
+target_link_libraries(Imago PRIVATE 
     imgui 
     libraw 
     JPEG::JPEG 

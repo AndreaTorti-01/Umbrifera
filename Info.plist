@@ -3,22 +3,25 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleName</key>
-	<string>Umbrifera</string>
+	<string>Imago</string>
 	
 	<key>CFBundleDisplayName</key>
-	<string>Umbrifera</string>
+	<string>Imago</string>
 	
 	<key>CFBundleExecutable</key>
-	<string>Umbrifera</string>
+	<string>Imago</string>
 	
 	<key>CFBundleIdentifier</key>
-	<string>com.umbrifera.app</string>
+	<string>com.imago.app</string>
 	
 	<key>CFBundleVersion</key>
 	<string>1.0.0</string>
 	
 	<key>CFBundleShortVersionString</key>
 	<string>1.0</string>
+	
+	<key>CFBundleIconFile</key>
+	<string>Imago.icns</string>
 	
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>

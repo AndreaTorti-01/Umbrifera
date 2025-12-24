@@ -309,7 +309,7 @@ FileNavigator::FileNavigator() {
 
     // Setup cache directory in macOS user caches folder
     if (homeDir) {
-        m_CacheDir = std::string(homeDir) + "/Library/Caches/Umbrifera/thumbnails";
+        m_CacheDir = std::string(homeDir) + "/Library/Caches/Imago/thumbnails";
         try {
             std::filesystem::create_directories(m_CacheDir);
         } catch (...) {

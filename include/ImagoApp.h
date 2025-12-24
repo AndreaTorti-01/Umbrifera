@@ -69,10 +69,10 @@ struct Uniforms {
     float padding[2]; // Alignment
 };
 
-class UmbriferaApp {
+class ImagoApp {
 public:
-    UmbriferaApp();
-    ~UmbriferaApp();
+    ImagoApp();
+    ~ImagoApp();
 
     bool Init();
     void Run();
