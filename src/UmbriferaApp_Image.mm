@@ -8,6 +8,13 @@
 
 // We use LibRaw to decode raw images (NEF, CR2, ARW, etc.)
 // LibRaw is a C++ library that handles the complex task of parsing raw file formats.
+
+// Callback for AMaZE demosaicing (GPL3 pack)
+static void amaze_callback(void* ctx) {
+    LibRaw* lr = (LibRaw*)ctx;
+    lr->amaze_demosaic_RT();
+}
+
 void UmbriferaApp::LoadRawImage(const std::string& path) {
     // If we are already loading an image, don't start another load.
     if (m_IsLoading) return;
@@ -56,9 +63,10 @@ void UmbriferaApp::LoadRawImage(const std::string& path) {
             // output_bps = 16: We want 16-bit data for high precision (better than 8-bit JPEG).
             RawProcessor->imgdata.params.output_bps = 16;
             
-            // user_qual = 11: Use DHT (Damped Hybrid Transform) demosaicing.
-            // DHT produces the highest quality results with minimal artifacts.
-            RawProcessor->imgdata.params.user_qual = 11;
+            // user_qual = 12: Use AMaZE demosaicing (via GPL3 pack).
+            // AMaZE is generally considered the best demosaicing algorithm for Bayer sensors.
+            RawProcessor->imgdata.params.user_qual = 12;
+            RawProcessor->callbacks.interpolate_bayer_cb = amaze_callback;
             
             // no_auto_bright = 1: Don't automatically brighten the image. We want control.
             RawProcessor->imgdata.params.no_auto_bright = 1;

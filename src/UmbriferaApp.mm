@@ -99,7 +99,7 @@ void UmbriferaApp::InitImGui() {
     
     // Load MacOS System Font with antialiasing
     ImFontConfig fontConfig;
-    fontConfig.OversampleH = 3; // Improve horizontal antialiasing
+    fontConfig.OversampleH = 2; // Improve horizontal antialiasing
     fontConfig.OversampleV = 2; // Improve vertical antialiasing
     fontConfig.PixelSnapH = false; // Allow subpixel rendering
     

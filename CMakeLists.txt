@@ -49,12 +49,25 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(libraw)
 
+# 3.1 LibRaw GPL3 Demosaic Pack
+FetchContent_Declare(
+  libraw_gpl3
+  GIT_REPOSITORY https://github.com/LibRaw/LibRaw-demosaic-pack-GPL3
+  GIT_TAG        master
+)
+FetchContent_MakeAvailable(libraw_gpl3)
+
 # LibRaw doesn't have a root CMakeLists.txt, so we build it manually
 file(GLOB_RECURSE LIBRAW_SOURCES "${libraw_SOURCE_DIR}/src/*.cpp")
 list(FILTER LIBRAW_SOURCES EXCLUDE REGEX ".*_ph\\.cpp$") # Exclude proprietary/GPL parts if any
+
+# Add GPL3 wrapper implementation
+list(APPEND LIBRAW_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/libraw_gpl3_impl.cpp")
+
 add_library(libraw STATIC ${LIBRAW_SOURCES})
-target_include_directories(libraw PUBLIC ${libraw_SOURCE_DIR})
-target_compile_definitions(libraw PUBLIC LIBRAW_NODLL LIBRAW_NOTHREADS)
+target_include_directories(libraw PUBLIC ${libraw_SOURCE_DIR} ${libraw_gpl3_SOURCE_DIR})
+target_include_directories(libraw PRIVATE "${libraw_SOURCE_DIR}/internal")
+target_compile_definitions(libraw PUBLIC LIBRAW_NODLL LIBRAW_NOTHREADS LIBRAW_USE_GPL3)
 
 # 4. System Libraries (Production Quality Export)
 # Requiring latest stable versions as of Nov 2025
