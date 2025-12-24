@@ -6,22 +6,16 @@
 #include <GLFW/glfw3.h>
 #include <jpeglib.h>
 
-// This file handles the User Interface (UI) rendering using Dear ImGui.
-// It defines how the windows, buttons, and images look and behave.
-
-// Local helper for sliders (uses UIHelpers version internally)
 static bool SliderWithReset(const char* label, float* v, float v_min, float v_max, float default_val, const char* format = "%.3f") {
     return UIHelpers::SliderWithReset(label, v, v_min, v_max, default_val, format);
 }
 
-// Aliases for backward compatibility with existing code
 static void UI_Separator() { UIHelpers::Separator(); }
 static void UI_Header(const char* text) { UIHelpers::Header(text); }
 static void UI_GapSmall() { UIHelpers::GapSmall(); }
 static void UI_GapLarge() { UIHelpers::GapLarge(); }
 
 void UmbriferaApp::SetupLayout() {
-    // This function runs once to set up the initial window layout.
     if (m_FirstLayout) {
         ImGui::SetNextWindowSize(ImVec2(300, 600), ImGuiCond_FirstUseEver);
         m_FirstLayout = false;
@@ -37,11 +31,9 @@ void UmbriferaApp::OpenResizeDialog() {
 }
 
 void UmbriferaApp::RenderUI() {
-    // Global Keyboard Shortcuts
     ImGuiIO& io = ImGui::GetIO();
     
-    // Undo: Cmd+Z (macOS) or Ctrl+Z (other platforms)
-    bool modKey = io.KeySuper || io.KeyCtrl; // Super = Cmd on macOS
+    bool modKey = io.KeySuper || io.KeyCtrl;
     if (modKey && ImGui::IsKeyPressed(ImGuiKey_Z, false) && !io.KeyShift) {
         if (!m_UndoStack.empty() && !m_IsLoading && !m_CropMode && !m_ArbitraryRotateDragging && !m_UndoPending) {
             m_UndoPending = true; // Defer to next frame to avoid texture-in-use issues
@@ -618,9 +610,6 @@ void UmbriferaApp::RenderUI() {
     
     // Draw File Navigator (disabled in crop mode)
     if (m_FileNavigator) {
-        if (m_LogoTexture) {
-            m_FileNavigator->SetLogo(m_LogoTexture);
-        }
         if (m_CropMode) {
             ImGui::BeginDisabled();
         }

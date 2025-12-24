@@ -1,2 +1,3 @@
 #!/bin/bash
-./build/Umbrifera
+# Launch the macOS .app bundle
+open build/Umbrifera.app

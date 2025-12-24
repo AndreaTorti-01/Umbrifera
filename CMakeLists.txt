@@ -65,7 +65,7 @@ list(FILTER LIBRAW_SOURCES EXCLUDE REGEX ".*_ph\\.cpp$") # Exclude proprietary/G
 list(APPEND LIBRAW_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/libraw_gpl3_impl.cpp")
 
 add_library(libraw STATIC ${LIBRAW_SOURCES})
-target_include_directories(libraw PUBLIC ${libraw_SOURCE_DIR} ${libraw_gpl3_SOURCE_DIR})
+target_include_directories(libraw PUBLIC ${libraw_SOURCE_DIR} ${libraw_gpl3_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_include_directories(libraw PRIVATE "${libraw_SOURCE_DIR}/internal")
 target_compile_definitions(libraw PUBLIC LIBRAW_NODLL LIBRAW_NOTHREADS LIBRAW_USE_GPL3)
 
@@ -74,9 +74,6 @@ target_compile_definitions(libraw PUBLIC LIBRAW_NODLL LIBRAW_NOTHREADS LIBRAW_US
 find_package(JPEG 3.0 REQUIRED) # libjpeg-turbo 3.0.4
 find_package(PNG 1.6.44 REQUIRED) # libpng 1.6.44
 find_package(TIFF 4.7 REQUIRED) # libtiff 4.7.1
-
-# Copy Shaders.metal to the build directory
-configure_file(shaders/Shaders.metal Shaders.metal COPYONLY)
 
 # ImGui Setup
 set(IMGUI_DIR ${imgui_SOURCE_DIR})
@@ -103,13 +100,15 @@ target_include_directories(imgui PUBLIC ${IMGUI_DIR} ${IMGUI_DIR}/backends)
 target_link_libraries(imgui PUBLIC glfw)
 target_compile_options(imgui PRIVATE -fobjc-arc)
 
-# Main Executable
-add_executable(Umbrifera 
+# Main Executable - Build as macOS bundle
+add_executable(Umbrifera MACOSX_BUNDLE
     src/main.cpp 
     src/UmbriferaApp.mm
     src/UmbriferaApp_UI.mm
     src/UmbriferaApp_Image.mm
     src/UmbriferaApp_Render_Metal.mm
+    src/UmbriferaApp_Image_GPU.mm
+    src/UmbriferaApp_TextureOps.mm
     src/FileNavigator.mm
 )
 
@@ -117,6 +116,32 @@ target_include_directories(Umbrifera PUBLIC include)
 
 set_source_files_properties(src/main.cpp PROPERTIES LANGUAGE OBJCXX)
 target_compile_options(Umbrifera PRIVATE -fobjc-arc)
+
+# Set bundle properties
+set_target_properties(Umbrifera PROPERTIES
+    MACOSX_BUNDLE_INFO_PLIST ${CMAKE_SOURCE_DIR}/Info.plist
+    MACOSX_BUNDLE_BUNDLE_NAME "Umbrifera"
+    MACOSX_BUNDLE_GUI_IDENTIFIER "com.umbrifera.app"
+    MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0"
+    MACOSX_BUNDLE_BUNDLE_VERSION "1.0.0"
+)
+
+# Copy shaders to Resources
+set_source_files_properties(shaders/Shaders.metal PROPERTIES
+    MACOSX_PACKAGE_LOCATION Resources
+)
+
+# Copy assets to Resources
+file(GLOB ASSETS_PNG "assets/*.png")
+set_source_files_properties(${ASSETS_PNG} PROPERTIES
+    MACOSX_PACKAGE_LOCATION Resources/assets
+)
+
+# Add resources to target
+target_sources(Umbrifera PRIVATE
+    shaders/Shaders.metal
+    ${ASSETS_PNG}
+)
 
 # Link libraries
 target_link_libraries(Umbrifera PRIVATE 

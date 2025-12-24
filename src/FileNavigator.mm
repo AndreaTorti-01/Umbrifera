@@ -349,10 +349,6 @@ void FileNavigator::SetRootPath(const std::string& path) {
     }
 }
 
-void FileNavigator::SetLogo(id<MTLTexture> logo) {
-    m_LogoTexture = logo;
-}
-
 void FileNavigator::Render(std::function<void(std::string)> onFileSelected) {
     // Store callback for use in RenderDirectory
     m_OnFileSelected = onFileSelected;

@@ -93,11 +93,12 @@ private:
     void InitWindow();
     void InitImGui();
     void InitGraphics();
-    void LoadLogo(const std::string& path);
     
     void RenderFrame();
     void RenderUI();
     void ProcessImage();
+    void HandlePendingCrop();
+    void HandlePendingRotation();
     
     void UpdateUniforms();
     // void LoadRawImage(const std::string& path); // Moved to public

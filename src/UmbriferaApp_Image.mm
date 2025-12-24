@@ -1,4 +1,5 @@
 #include "UmbriferaApp.h"
+#include "libraw_gpl3.h"
 #include <iostream>
 #include <fstream>
 #include <vector>
@@ -11,7 +12,7 @@
 
 // Callback for AMaZE demosaicing (GPL3 pack)
 static void amaze_callback(void* ctx) {
-    LibRaw* lr = (LibRaw*)ctx;
+    LibRawGPL3* lr = (LibRawGPL3*)ctx;
     lr->amaze_demosaic_RT();
 }
 
@@ -35,7 +36,7 @@ void UmbriferaApp::LoadRawImage(const std::string& path) {
             // Create a new LibRaw processor instance on the heap.
             // We use std::make_unique to manage memory automatically.
             // This object is large, so putting it on the heap prevents stack overflow.
-            auto RawProcessor = std::make_unique<LibRaw>();
+            auto RawProcessor = std::make_unique<LibRawGPL3>();
             
             std::string finalPath = path;
             std::ifstream checkFile(finalPath);
@@ -66,7 +67,7 @@ void UmbriferaApp::LoadRawImage(const std::string& path) {
             // user_qual = 12: Use AMaZE demosaicing (via GPL3 pack).
             // AMaZE is generally considered the best demosaicing algorithm for Bayer sensors.
             RawProcessor->imgdata.params.user_qual = 12;
-            RawProcessor->callbacks.interpolate_bayer_cb = amaze_callback;
+            RawProcessor->set_interpolate_bayer_callback(amaze_callback);
             
             // no_auto_bright = 1: Don't automatically brighten the image. We want control.
             RawProcessor->imgdata.params.no_auto_bright = 1;

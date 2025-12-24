@@ -3,6 +3,7 @@
 #include "imgui_internal.h" // For DockBuilder API
 #include "imgui_impl_glfw.h"
 #include <stdio.h>
+#import <Cocoa/Cocoa.h>
 
 #define GLFW_EXPOSE_NATIVE_COCOA
 #include "imgui_impl_metal.h"
@@ -89,6 +90,18 @@ void UmbriferaApp::InitImGui() {
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+
+    // Set imgui.ini path to bundle resources
+    static std::string iniPathStr;
+    NSString* resourcePath = [[NSBundle mainBundle] resourcePath];
+    NSString* iniPath = [resourcePath stringByAppendingPathComponent:@"imgui.ini"];
+    iniPathStr = [iniPath UTF8String];
+    io.IniFilename = iniPathStr.c_str();
+    
+    // If no layout has ever been set, request a reset to default layout
+    if (![[NSFileManager defaultManager] fileExistsAtPath:iniPath]) {
+        m_ResetLayoutRequested = true;
+    }
 
     // Get display scale for Retina/HiDPI support
     NSScreen *mainScreen = [NSScreen mainScreen];
@@ -201,8 +214,6 @@ void UmbriferaApp::InitImGui() {
 
 void UmbriferaApp::InitGraphics() {
     InitMetal();
-    // Load Logo
-    LoadLogo("assets/logo.png");
     
     m_RotateCWTexture = LoadAssetTexture("rotate_90_degrees_cw_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png");
     m_RotateCCWTexture = LoadAssetTexture("rotate_90_degrees_ccw_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.png");
@@ -214,17 +225,19 @@ void UmbriferaApp::InitGraphics() {
 }
 
 id<MTLTexture> UmbriferaApp::LoadAssetTexture(const std::string& filename) {
-    std::string path = "assets/" + filename;
-    NSString* nsPath = [NSString stringWithUTF8String:path.c_str()];
-    NSImage* image = [[NSImage alloc] initWithContentsOfFile:nsPath];
+    // Load from bundle Resources/assets
+    NSBundle* bundle = [NSBundle mainBundle];
+    NSString* fileNameNS = [NSString stringWithUTF8String:filename.c_str()];
+    NSString* nsPath = [bundle pathForResource:[fileNameNS stringByDeletingPathExtension] 
+                                        ofType:[fileNameNS pathExtension] 
+                                   inDirectory:@"assets"];
     
-    if (!image) {
-        // Try from parent directory (running from build folder)
-        path = "../assets/" + filename;
-        nsPath = [NSString stringWithUTF8String:path.c_str()];
-        image = [[NSImage alloc] initWithContentsOfFile:nsPath];
+    if (!nsPath) {
+        std::cerr << "Failed to find asset in bundle: " << filename << std::endl;
+        return nil;
     }
     
+    NSImage* image = [[NSImage alloc] initWithContentsOfFile:nsPath];
     if (!image) {
         std::cerr << "Failed to load asset: " << filename << std::endl;
         return nil;
@@ -242,47 +255,6 @@ id<MTLTexture> UmbriferaApp::LoadAssetTexture(const std::string& filename) {
     [texture replaceRegion:region mipmapLevel:0 withBytes:[rep bitmapData] bytesPerRow:[rep bytesPerRow]];
     
     return texture;
-}
-
-void UmbriferaApp::LoadLogo(const std::string& path) {
-    NSString* nsPath = [NSString stringWithUTF8String:path.c_str()];
-    NSImage* image = [[NSImage alloc] initWithContentsOfFile:nsPath];
-    if (!image) {
-        // Try absolute path if relative fails (dev environment)
-        NSString* currentDir = [[NSFileManager defaultManager] currentDirectoryPath];
-        NSString* absPath = [currentDir stringByAppendingPathComponent:nsPath];
-        image = [[NSImage alloc] initWithContentsOfFile:absPath];
-    }
-    
-    if (image) {
-        // Convert to CGImage
-        CGImageRef cgImage = [image CGImageForProposedRect:nil context:nil hints:nil];
-        NSUInteger width = CGImageGetWidth(cgImage);
-        NSUInteger height = CGImageGetHeight(cgImage);
-        
-        // Create Metal Texture
-        MTLTextureDescriptor* textureDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:width height:height mipmapped:YES];
-        m_LogoTexture = [m_Device newTextureWithDescriptor:textureDescriptor];
-        
-        // Get raw data
-        NSBitmapImageRep* rep = [[NSBitmapImageRep alloc] initWithCGImage:cgImage];
-        // Ensure RGBA
-        // This might be BGRA or RGBA depending on source.
-        // Let's assume standard RGBA for now or check format.
-        // Actually NSBitmapImageRep bitmapData gives raw bytes.
-        
-        MTLRegion region = MTLRegionMake2D(0, 0, width, height);
-        [m_LogoTexture replaceRegion:region mipmapLevel:0 withBytes:[rep bitmapData] bytesPerRow:[rep bytesPerRow]];
-        
-        // Generate mipmaps for smooth scaling
-        id<MTLCommandBuffer> commandBuffer = [m_CommandQueue commandBuffer];
-        id<MTLBlitCommandEncoder> blitEncoder = [commandBuffer blitCommandEncoder];
-        [blitEncoder generateMipmapsForTexture:m_LogoTexture];
-        [blitEncoder endEncoding];
-        [commandBuffer commit];
-    } else {
-        std::cerr << "Failed to load logo: " << path << std::endl;
-    }
 }
 
 void UmbriferaApp::Run() {
@@ -317,8 +289,6 @@ void UmbriferaApp::UpdateUniforms() {
     
     UpdateMacOSMenu();
 }
-
-#import <Cocoa/Cocoa.h>
 
 // Helper interface to handle menu actions
 @interface MenuHandler : NSObject

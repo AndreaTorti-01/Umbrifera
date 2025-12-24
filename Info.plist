@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>Umbrifera</string>
+	
+	<key>CFBundleDisplayName</key>
+	<string>Umbrifera</string>
+	
+	<key>CFBundleExecutable</key>
+	<string>Umbrifera</string>
+	
+	<key>CFBundleIdentifier</key>
+	<string>com.umbrifera.app</string>
+	
+	<key>CFBundleVersion</key>
+	<string>1.0.0</string>
+	
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	
+	<key>NSMetalAPIValidationEnabled</key>
+	<false/>
+	
+	<key>NSSupportsAutomaticGraphicsSwitching</key>
+	<true/>
+	
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.photography</string>
+	
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeExtensions</key>
+			<array>
+				<string>nef</string>
+				<string>cr2</string>
+				<string>cr3</string>
+				<string>arw</string>
+				<string>raf</string>
+				<string>dng</string>
+			</array>
+			<key>CFBundleTypeName</key>
+			<string>RAW Image</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+		</dict>
+	</array>
+</dict>
+</plist>

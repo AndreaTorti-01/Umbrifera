@@ -19,10 +19,12 @@ This ensures all implementations match the user's exact expectations and prevent
 
 ### Core Components
 - **Main Application** (`UmbriferaApp.h/.mm`): Central app logic, state management, initialization
-- **UI Rendering** (`UmbriferaApp_UI.mm`): ImGui-based interface with docking, ~2000 lines handling all panels
-- **Image Processing** (`UmbriferaApp_Image.mm`): LibRaw integration, async image loading, EXIF extraction
-- **Metal Rendering** (`UmbriferaApp_Render_Metal.mm`): GPU pipeline setup, texture management, histogram computation
-- **Shaders** (`shaders/Shaders.metal`): Metal shader code (~850 lines) for all image processing
+- **UI Rendering** (`UmbriferaApp_UI.mm`): ImGui-based interface with docking (~2000 lines handling all panels)
+- **Image Loading & Export** (`UmbriferaApp_Image.mm`): LibRaw integration, async image loading, EXIF extraction, image export
+- **GPU Image Processing** (`UmbriferaApp_Image_GPU.mm`): ProcessImage, grain generation, histogram computation on GPU
+- **Texture Operations** (`UmbriferaApp_TextureOps.mm`): Crop, rotation, and undo texture manipulation operations
+- **Metal Rendering** (`UmbriferaApp_Render_Metal.mm`): GPU pipeline initialization, frame rendering, texture setup
+- **Shaders** (`shaders/Shaders.metal`): Metal shader code (~1000 lines) for all image processing
 - **File Navigator** (`FileNavigator.h/.mm`): Thumbnail browser for RAW files with async loading
 - **UI Config** (`include/UIConfig.h`): Centralized UI constants (spacing, sizes, colors)
 - **UI Helpers** (`include/UIHelpers.h`): Reusable UI patterns and dialog components
@@ -36,17 +38,19 @@ Umbrifera/
 │   ├── UIConfig.h         # UI constants
 │   └── UIHelpers.h        # UI helper functions
 ├── src/               # Implementation files
-│   ├── main.cpp                       # Entry point
-│   ├── UmbriferaApp.mm               # Init, run loop, presets
-│   ├── UmbriferaApp_UI.mm            # All UI rendering
-│   ├── UmbriferaApp_Image.mm         # Image loading, export
-│   ├── UmbriferaApp_Render_Metal.mm  # Metal pipeline
-│   └── FileNavigator.mm              # File browser impl
+│   ├── main.cpp                           # Entry point
+│   ├── UmbriferaApp.mm                   # Init, run loop, presets, menu handlers
+│   ├── UmbriferaApp_UI.mm                # All UI rendering (~2000 lines)
+│   ├── UmbriferaApp_Image.mm             # Image loading, export, EXIF
+│   ├── UmbriferaApp_Image_GPU.mm         # GPU image processing and histogram
+│   ├── UmbriferaApp_Texture Ops.mm       # Crop, rotate, undo operations
+│   ├── UmbriferaApp_Render_Metal.mm      # Metal pipeline setup and frame rendering
+│   └── FileNavigator.mm                  # File browser implementation
 ├── shaders/
-│   └── Shaders.metal      # All GPU shaders
-├── assets/            # PNG icons and logo
+│   └── Shaders.metal      # Metal shader code (vertex, fragment, compute kernels)
+├── assets/            # PNG icon assets
 ├── build/             # Build output (generated)
-├── pipeline.md        # Detailed pipeline documentation
+├── pipeline.md        # Detailed image processing pipeline documentation
 └── README.md          # Project overview and planned features
 ```
 
@@ -68,10 +72,25 @@ All application state is in `UmbriferaApp` class:
 - **Export**: libjpeg-turbo, libpng, libtiff
 
 ### Build System
-- CMake-based with FetchContent for dependencies
-- `./build.sh` - Build the application
-- `./run.sh` - Run the built application
+- **macOS Application Bundle**: Proper `.app` bundle structure for distribution
+- CMake-based with `MACOSX_BUNDLE` target
+- `./build.sh` - Build and sign the application bundle
+- `./run.sh` - Launch `Umbrifera.app` (uses `open` command)
 - Dependencies auto-downloaded: GLFW, ImGui (docking branch), LibRaw
+- **Bundle Structure**:
+  ```
+  build/Umbrifera.app/
+  └── Contents/
+      ├── Info.plist              # Bundle metadata
+      ├── MacOS/
+      │   └── Umbrifera           # Main executable
+      ├── Resources/
+      │   ├── Shaders.metal       # Metal shader source
+      │   └── assets/             # PNG icons
+      └── _CodeSignature/         # Ad-hoc signature
+  ```
+- Resources loaded via `[NSBundle mainBundle]` API
+- Automatically signed with ad-hoc signature during build
 
 ## UI Design Philosophy
 
@@ -198,6 +217,13 @@ Single-pass fragment shader applies (in order):
 - Overwrite confirmation dialog (styled consistently)
 - Real-time size estimation for JPG (async thread on downsampled preview)
 
+### Resource Loading
+- **Shaders**: Loaded from bundle via `[[NSBundle mainBundle] pathForResource:@"Shaders" ofType:@"metal"]`
+- **Assets**: Loaded from `Resources/assets/` directory in bundle
+- All resources embedded in `.app` bundle at build time via CMake `MACOSX_PACKAGE_LOCATION`
+- No relative path dependencies - everything uses `[NSBundle mainBundle]` API
+- Resources automatically copied to correct bundle locations during build
+
 ## Code Patterns & Best Practices
 
 ### Reset Functionality
@@ -230,6 +256,7 @@ Set `m_ImageDirty = true` when uniforms change to trigger GPU reprocessing.
 4. **LibRaw Variables**: In loading thread, use `RawProcessor` (local), not `m_RawProcessor`
 5. **Dialog Centering**: Always call `ImGui::SetNextWindowPos()` BEFORE `ImGui::OpenPopup()`
 6. **Window Title**: Set via `glfwSetWindowTitle(m_Window, ...)`, not ImGui panel names
+7. **Resource Loading**: Always use `[NSBundle mainBundle]` API to load resources from bundle - never use relative paths
 
 ## Important Reminders
 
@@ -244,7 +271,7 @@ Set `m_ImageDirty = true` when uniforms change to trigger GPU reprocessing.
 - Verify histogram updates in real-time
 - Check sidecar file persistence
 - **Update this file** with any new patterns or architectural changes
-- When you change anything in the shaders, instead of `./build.sh`, call `./build.sh && (./build/Umbrifera & PID=$!; sleep 1; kill $PID)` so when it runs you see the output from shaders compilation.
+- Test the app by running `./run.sh` which launches the proper `.app` bundle
 
 ## Asset Requirements
 Icons should be PNG format, located in `assets/`:
@@ -257,9 +284,56 @@ Icons should be PNG format, located in `assets/`:
 
 ---
 
-**Last Updated**: 2025-12-07
+**Last Updated**: 2025-12-24
 **Tip**: Keep this file updated as you work on the application. Document new patterns, gotchas, and architectural decisions.
 
-### Code Hygiene
-- **Never keep old commented code around.** If code is removed or replaced, delete it completely. Use git history if retrieval is needed.
-- **Comments should describe WHAT the code is doing.** Avoid comments that describe what the code is *supposed* to do, or that reference user requests (e.g. "As requested by user"). Keep comments technical and descriptive.
+### Code Hygiene Standards
+
+**Bad comments** (do NOT include these):
+- Obvious statements: `// Clear buffer` before `buffer.clear()`
+- Positioning hints: `// Lighter grey on hover` on color assignments
+- File-level descriptions: should be in documentation, not code
+- Redundant explanations: when code is self-explanatory
+- Cryptic placeholders: `// ... (Helpers remain same)`
+
+**Good comments** (DO include these):
+- WHY decisions: `// Double-buffering prevents reading zeros during GPU write`
+- Algorithm explanations: `// Transform crop: view(x,y) -> raw(y, 1-x) for 90° rotation`
+- Non-obvious logic: behavior that isn't clear from code alone
+- Gotchas: `// Metal requires explicit viewport; defaults to window size`
+- Important links: references to pipeline.md for complex operations
+
+### File Organization  
+- **Split large files** when they exceed ~400 lines and mix distinct concerns
+- Each file should have a single, clear responsibility:
+  - `UmbriferaApp_Render_Metal.mm` - Metal pipeline initialization and frame rendering
+  - `UmbriferaApp_Image_GPU.mm` - GPU image processing (ProcessImage, grain, histogram)
+  - `UmbriferaApp_TextureOps.mm` - Texture manipulation (crop, rotate, undo)
+  - `UmbriferaApp_Image.mm` - File I/O and CPU-side image operations
+  - `UmbriferaApp_UI.mm` - All UI rendering (currently ~2000 lines; candidates for further splits: dialogs, image viewer, develop panel)
+
+### Code Patterns
+- **Never keep commented-out code** - delete completely; use git history if needed
+- **Extract reusable UI patterns** to `UIHelpers.h` instead of duplicating
+- **Centralize constants** in `UIConfig.h` - no magic numbers in component code
+- **Bundle related operations** - keep crop, rotate, undo together for logic clarity
+- **Group GPU operations** - separate compute kernels from main processing pipeline
+
+### Recent Cleanup (Dec 2025)
+- Removed logo loading feature (~40 lines)
+- Split `UmbriferaApp_Render_Metal.mm` into:
+  - ProcessImage, grain generation → `UmbriferaApp_Image_GPU.mm`
+  - Crop, rotate, undo operations → `UmbriferaApp_TextureOps.mm`
+  - Main rendering pipeline → stays in `UmbriferaApp_Render_Metal.mm`
+- Removed ~40 useless comments (obvious statements, redundant explanations)
+- **Converted to proper macOS .app bundle**:
+  - Created `Info.plist` with bundle metadata
+  - Updated CMakeLists.txt to use `MACOSX_BUNDLE` target
+  - Resources embedded in bundle via `MACOSX_PACKAGE_LOCATION`
+  - Updated resource loading to use `[NSBundle mainBundle]` API
+  - Automatic ad-hoc code signature in build script
+  - Proper bundle structure: `Contents/{MacOS,Resources,_CodeSignature}`
+- **Integrated LibRaw GPL3 Demosaic Pack (AMaZE)**:
+  - Created `LibRawGPL3` subclass to bridge abandoned GPL3 pack with modern LibRaw (0.21+)
+  - Implemented `amaze_callback` using LibRaw's `interpolate_bayer_cb` system
+  - Clean integration without modifying upstream LibRaw source code
